@@ -1,4 +1,4 @@
-"""PDF page splitting and deterministic PNG rendering via PyMuPDF."""
+"""Deterministic PDF page PNG rendering via PyMuPDF from file paths or in-memory bytes."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,42 +11,31 @@ _pymupdf: Any = pymupdf
 
 @dataclass(frozen=True)
 class PdfPagePayload:
-    """One 1-based page from a supplier PDF batch with rendered PNG and single-page PDF bytes."""
+    """One 1-based page from a supplier PDF batch rendered to PNG bytes."""
 
     page_number: int
-    pdf_bytes: bytes
     png_bytes: bytes
 
 
-def load_pdf_pages(path: Path | str, render_dpi: int = 200) -> list[PdfPagePayload]:
-    """Split a PDF into single-page PDF bytes and rendered PNGs for vision extraction and UI preview."""
-    pdf_path = Path(path)
+def _open_pdf_document(source: Path | str | bytes) -> Any:
+    if isinstance(source, bytes):
+        if not source:
+            raise ValueError("PDF byte payload is empty")
+        return _pymupdf.open(stream=source, filetype="pdf")
+    pdf_path = Path(source)
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    return _pymupdf.open(pdf_path)
 
+
+def load_pdf_pages(source: Path | str | bytes, render_dpi: int = 200) -> list[PdfPagePayload]:
+    """Render each page of a PDF (from disk path or raw bytes) to PNG bytes for vision and UI preview."""
     payloads: list[PdfPagePayload] = []
-    with _pymupdf.open(pdf_path) as document:
+    with _open_pdf_document(source) as document:
         if document.page_count == 0:
-            raise ValueError(f"PDF file has 0 pages: {pdf_path}")
+            raise ValueError("PDF document has 0 pages")
         for page_index in range(document.page_count):
-            single_page_pdf = _pymupdf.open()
-            single_page_pdf.insert_pdf(document, from_page=page_index, to_page=page_index)
-            pdf_bytes = bytes(single_page_pdf.tobytes())
-            single_page_pdf.close()
-
             page = document.load_page(page_index)
             pixmap = page.get_pixmap(dpi=render_dpi, alpha=False)
-            png_bytes = bytes(pixmap.tobytes("png"))
-            payloads.append(
-                PdfPagePayload(page_number=page_index + 1, pdf_bytes=pdf_bytes, png_bytes=png_bytes)
-            )
+            payloads.append(PdfPagePayload(page_number=page_index + 1, png_bytes=bytes(pixmap.tobytes("png"))))
     return payloads
-
-
-def render_single_page_png(path: Path | str, page_number: int, dpi: int = 200) -> bytes:
-    """Render one 1-based page of a PDF as PNG bytes."""
-    with _pymupdf.open(path) as document:
-        if page_number < 1 or page_number > document.page_count:
-            raise IndexError(f"Page {page_number} out of range (1..{document.page_count})")
-        pixmap = document.load_page(page_number - 1).get_pixmap(dpi=dpi, alpha=False)
-        return bytes(pixmap.tobytes("png"))

@@ -10,8 +10,8 @@ import pymupdf
 
 from app.engine.math_rules import verify_pdf_document_math
 from app.engine.reconcile_engine import reconcile_batch
-from app.kernel import build_reconciliation_service
-from app.llm.client import DiskCachedExtractor, TokenCount
+from app.kernel import build_page_extractors, build_reconciliation_service
+from app.llm.client import DiskCachedExtractor, FallbackPageExtractor, TokenCount, UpstreamUnavailable
 from app.llm.parser import normalize_key, parse_assembled_document
 from app.llm.pdf_splitter import PdfPagePayload
 from app.schemas.erp import ErpDocument, ErpLine, ErpWorkbook
@@ -455,8 +455,118 @@ async def test_service_math_gate_retry_repairs_primary_misread_and_cache_hits(tm
     assert retry_inner.calls == 1
 
 
-def test_settings_infers_provider_names_across_litellm_models() -> None:
+def test_settings_infers_provider_names_and_resolves_fallback_gracefully() -> None:
     assert infer_provider_name("gemini/gemini-3.5-flash-lite") == "gemini"
-    assert infer_provider_name("openai/deepseek-flash", "https://api.deepseek.com") == "deepseek"
+    assert infer_provider_name("deepseek/deepseek-flash") == "deepseek"
     assert infer_provider_name("anthropic/claude-sonnet-5.5") == "anthropic"
     assert infer_provider_name("openai/gpt-4o-mini") == "openai"
+
+    # When fallback model has no API key set, build_page_extractors disables fallback instead of crashing.
+    settings_single_key = Settings(
+        llm_model="gemini/gemini-3.5-flash-lite",
+        llm_fallback_model="deepseek/deepseek-flash",
+        gemini_api_key="test-gemini-key",
+        deepseek_api_key=None,
+        secrets_env_path=None,
+        extraction_cache_dir=None,
+    )
+    primary, _, active_fallback = build_page_extractors(settings_single_key)
+    assert active_fallback is None
+    assert not isinstance(primary, FallbackPageExtractor)
+
+
+class _Always503Extractor:
+    provider_name = "gemini"
+    model_name = "gemini/gemini-3.5-flash-lite"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def extract_page(
+        self,
+        page: PdfPagePayload,
+        total_pages: int,
+        retry_feedback: list[str] | None = None,
+    ) -> tuple[PrintedPage, TokenCount]:
+        self.calls += 1
+        raise UpstreamUnavailable("503 high demand spike")
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_fallback_extractor_recovers_immediately_on_primary_503_with_in_memory_bytes() -> None:
+    fitz_mod: Any = pymupdf
+    pdf_doc = fitz_mod.open()
+    pdf_page = pdf_doc.new_page()
+    pdf_page.insert_text((72, 72), "PKI/INV/2026/09/0001")
+    pdf_bytes = bytes(pdf_doc.tobytes())
+    pdf_doc.close()
+
+    wb = openpyxl.Workbook()
+    ws_inv = wb.active
+    assert ws_inv is not None
+    ws_inv.title = "AP_Invoices"
+    ws_inv.append(
+        [
+            "Entry ID",
+            "Vendor",
+            "Vendor Inv. No",
+            "Doc Date",
+            "PO No",
+            "Curr",
+            "Subtotal",
+            "DPP",
+            "PPN",
+            "Grand Total",
+            "Doc Status",
+        ]
+    )
+    ws_inv.append(
+        ["E-1", "Vendor", "PKI/INV/2026/09/0001", "2026-09-10", "PO-1", "IDR", 1000000, 916667, 110000, 1110000, "Posted"]
+    )
+    ws_lines = wb.create_sheet("AP_Lines")
+    ws_lines.append(
+        ["Entry ID", "Line", "Item Code", "Item Description", "Qty", "UOM", "Unit Price", "Disc %", "Line Amount"]
+    )
+    ws_lines.append(["E-1", 1, "SKU-1", "Paper", 10, "rim", 100000, 0, 1000000])
+    from io import BytesIO
+
+    erp_buf = BytesIO()
+    wb.save(erp_buf)
+    erp_bytes = erp_buf.getvalue()
+
+    good_page = PrintedPage(
+        doc_number_raw="PKI/INV/2026/09/0001",
+        po_number_raw="PO-1",
+        subtotal_raw="1.000.000",
+        dpp_raw="916.667",
+        ppn_raw="110.000",
+        grand_total_raw="1.110.000",
+        lines=[
+            PrintedLine(
+                line_number_raw="1",
+                item_code="SKU-1",
+                description="Paper",
+                quantity_raw="10",
+                uom_raw="rim",
+                unit_price_raw="100.000",
+                discount_pct_raw="0",
+                line_amount_raw="1.000.000",
+            )
+        ],
+    )
+    failing_primary = _Always503Extractor()
+    healthy_fallback = _FakeExtractor("deepseek/deepseek-flash", good_page)
+    wrapped = FallbackPageExtractor(failing_primary, healthy_fallback)
+
+    svc = build_reconciliation_service(Settings(), primary_extractor=wrapped, retry_extractor=None)
+    result = await svc.reconcile(pdf_bytes, erp_bytes, pdf_display_name="mem.pdf", erp_display_name="mem.xlsx")
+
+    assert failing_primary.calls == 1
+    assert healthy_fallback.calls == 1
+    assert result.report.documents[0].status == DocStatus.MATCHED
+    assert result.report.control_totals.unexplained_variance == Decimal("0")
+    assert result.report.usage is not None
+    assert result.report.usage.fallback_model == "deepseek/deepseek-flash"
+    assert result.report.usage.fallback_calls == 1

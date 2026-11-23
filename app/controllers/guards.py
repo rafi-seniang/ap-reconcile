@@ -6,6 +6,7 @@ from collections import deque
 from fastapi import HTTPException, Request, UploadFile
 
 _BYTES_PER_MB = 1024 * 1024
+_MAX_TRACKED_IP_BUCKETS = 1024
 
 
 def resolve_client_ip(request: Request) -> str:
@@ -19,20 +20,39 @@ def resolve_client_ip(request: Request) -> str:
 
 
 class InMemoryRateLimiter:
-    """Single-process sliding-window per-IP rate limiter protecting LLM endpoints from accidental loops or abuse."""
+    """Single-process sliding-window per-IP rate limiter with automatic stale-IP eviction."""
 
     def __init__(self, max_requests: int = 10, window_seconds: int = 60) -> None:
         self._max_requests = max_requests
         self._window_seconds = float(window_seconds)
         self._timestamps_by_ip: dict[str, deque[float]] = {}
 
+    def _evict_expired_buckets(self, cutoff: float) -> None:
+        stale_ips = [
+            ip for ip, bucket in self._timestamps_by_ip.items() if not bucket or bucket[-1] <= cutoff
+        ]
+        for ip in stale_ips:
+            del self._timestamps_by_ip[ip]
+
     def enforce(self, client_ip: str) -> None:
         """Record one request for client_ip or raise HTTP 429 if the sliding window is exhausted."""
         now = time.monotonic()
         cutoff = now - self._window_seconds
-        timestamps = self._timestamps_by_ip.setdefault(client_ip, deque())
-        while timestamps and timestamps[0] <= cutoff:
-            timestamps.popleft()
+        if len(self._timestamps_by_ip) > _MAX_TRACKED_IP_BUCKETS:
+            self._evict_expired_buckets(cutoff)
+
+        timestamps = self._timestamps_by_ip.get(client_ip)
+        if timestamps is not None:
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if not timestamps:
+                del self._timestamps_by_ip[client_ip]
+                timestamps = None
+
+        if timestamps is None:
+            timestamps = deque()
+            self._timestamps_by_ip[client_ip] = timestamps
+
         if len(timestamps) >= self._max_requests:
             raise HTTPException(
                 status_code=429,
