@@ -66,7 +66,7 @@ Supplier PDF ──► PyMuPDF Page Splitter (1-page native PDF + 200 DPI PNG)
 4. **Explicit R3/R4 tax-base policy (`0148`)**: Default `TAX_BASE_ERROR_AS_NEEDS_REVIEW=true` routes 100%-DPP invoices to `NEEDS_REVIEW` (requires revised Faktur Pajak), configurable to `AMOUNT_MISMATCH` via `.env`.
 5. **Fail-fast ERP contract validation**: Broken sheets, columns, dates, or numbers return HTTP 422 / exit code 2 with every `Sheet!Row Column` error before spending any LLM tokens.
 6. **Deterministic check gates over LLM confidence scores**: Auto-clearance requires every `CheckResult` gate (`parse_*`, line math, subtotal, DPP, PPN, grand total) to pass rather than trusting uncalibrated self-reported scores.
-7. **Provider-agnostic client**: Switching between `gemini-3.6-flash` and `deepseek-flash` during preview-model 503/504 outages required only an `.env` edit and produced identical 16/16 results.
+7. **Provider-agnostic client**: During live testing, `gemini-3.8-flash` hit upstream HTTP 503/504 capacity outages. Switching `.env` to `gemini-3.5-flash-lite` or `deepseek-flash` required zero code changes and produced identical 16/16 results.
 
 ## Evaluation Summary
 
@@ -79,7 +79,7 @@ Full benchmark methodology, timing, and raw failure artifacts are in [`docs/extr
 | `PyMuPDF` / `pdfplumber` / `pymupdf4llm` | **Fail (0/8 fields)** | `pdfplumber` 0 rows | 0.1-15.6 s | USD 0, raw text/Markdown only |
 | `RapidOCR` (200 DPI PNG) | Tokens read, **0 table structure** | N/A | ~7.5 s / scan | USD 0, 77 flat unordered lines |
 | `Docling` (`TableFormer ACCURATE` + `RapidOCR`) | Tokens read, **inconsistent Markdown** | 34/34 Markdown rows | 60.1 s warm | ~2.0 GB weights + **needs Stage-2 LLM** |
-| **Vision LLM (`deepseek-flash` / `gemini-3.6-flash`)** | **Exact (100%)** | **34/34 exact (100%)** | **33.7-39.8 s** | **USD 0.01 / USD 0 free, direct JSON** |
+| **Vision LLM (`gemini-3.5-flash-lite` / `deepseek-flash`)** | **Exact (100%)** | **34/34 exact (100%)** | **22.7-33.7 s** | **USD 0 free / USD 0.01, direct JSON** |
 
 ### End-to-End Reconciliation Results
 
@@ -87,10 +87,11 @@ Full control totals (Rp 0 tie-out), 7 adversarial cases, and observed failure gu
 
 | Benchmark Suite | Model | Status & Totals | Line Diffs | Unexplained | Calls (Primary+Retry) | Runtime & Cost |
 | --- | --- | --- | --- | ---: | --- | --- |
-| Sep 2026 (`ground_truth_sep2026.json`) | `gemini-3.6-flash` | **16 / 16 (100%)** | **16 / 16** | **Rp 0** | 16 + 1 (`0149`) | 39.8 s / USD 0 free |
+| Sep 2026 (`ground_truth_sep2026.json`) | `gemini-3.5-flash-lite` | **16 / 16 (100%)** | **16 / 16** | **Rp 0** | 16 + 1 (`0149`) | **22.7 s** / USD 0 free |
 | Sep 2026 (`ground_truth_sep2026.json`) | `deepseek-flash` | **16 / 16 (100%)** | **16 / 16** | **Rp 0** | 16 + 1 (`0149`) | 33.7 s / **USD 0.01** |
-| Unseen Synthetic Oct 2026 (all 8 statuses) | `gemini-3.6-flash` | **13 / 13 (100%)** | **13 / 13** | **Rp 0** | 15 + 1 | 40.5 s / USD 0 free |
-| Adversarial Nov 2026 (injection, blank scan, FX) | `gemini-3.6-flash` | **7 / 7 (100%)** | **7 / 7** | **Rp 0** | 8 + 2 | Live pass / USD 0 free |
+| Sep 2026 (`ground_truth_sep2026.json`) | `gemini-3.8-flash` | Upstream 503/504 | - | - | Failed loudly | `UpstreamUnavailable` |
+| Unseen Synthetic Oct 2026 (all 8 statuses) | `gemini-3.5-flash-lite` | **13 / 13 (100%)** | **13 / 13** | **Rp 0** | 15 + 1 | **16.0 s** / USD 0 free |
+| Adversarial Nov 2026 (injection, blank scan, FX) | `gemini-3.5-flash-lite` | **7 / 7 (100%)** | **7 / 7** | **Rp 0** | 8 + 2 | **9.3 s** / USD 0 free |
 
 ## Onboarding 40+ Additional Suppliers
 
@@ -103,10 +104,10 @@ Full control totals (Rp 0 tie-out), 7 adversarial cases, and observed failure gu
 
 - **Current limitations**: Single currency per batch (whole-rupiah IDR), no direct PO/GRN master lookup, no invoice-wide header discounts or PPh 23 withholding lines, in-memory run history (latest 10 runs), and no automatic re-ordering of physically shuffled multi-page scans.
 - **Proper CI/CD and regression gating**: Add GitHub Actions to run `ruff`, `mypy --strict`, offline `pytest`, and scheduled golden-dataset evals so prompt or model changes cannot silently regress accuracy before deployment.
-- **Deeper extraction and model research**: Benchmark additional vision models, structured-output settings, and render DPI trade-offs (150 vs 200 vs 300 DPI) to find the best accuracy-to-cost frontier across providers.
+- **Deeper extraction and model research**: Benchmark additional vision models (`gemini-3.8-flash` once upstream capacity stabilizes, `gemini-4-neon`, `gemini-4-hydrogen`, `deepseek-pro`, `claude-haiku-5.5`, `claude-sonnet-5.5`, and `gpt-luna-6.2`), structured-output settings, and render DPI trade-offs (150 vs 200 vs 300 DPI) across providers.
 - **Systematic edge-case testing**: Collect and test harder real-world Indonesian AP edge cases including overlapping wet stamps, handwritten adjustments, low-DPI phone photos, out-of-order scanned pages, multi-currency FX rounding, invoice-wide discounts, and PPh 23 withholding.
 - **Production workflow hardening**: Add 3-way match (PO + GRN + Indonesian e-Faktur QR/NSFP), persistent PostgreSQL storage with reviewer sign-offs and ERP reversal journals, and scheduled email/SFTP ingestion with Slack exception alerts.
 
 ## How AI Tools Were Used
 
-I used an AI coding assistant for initial research, module scaffolding, unit test authoring, and synthetic October/November test generation. All business rules, September 2026 ground-truth figures (audited directly against the raw PDF and ERP files), exact `.5` rounding cases, `mypy --strict`, `ruff`, automated tests, and live `gemini-3.6-flash` / `deepseek-flash` runs were independently verified.
+I used an AI coding assistant for initial research, module scaffolding, unit test authoring, and synthetic October/November test generation. All business rules, September 2026 ground-truth figures (audited directly against the raw PDF and ERP files), exact `.5` rounding cases, `mypy --strict`, `ruff`, automated tests, and live `gemini-3.5-flash-lite` / `deepseek-flash` runs were independently verified.
