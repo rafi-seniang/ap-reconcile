@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AP Reconcile</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <svg class="brand-mark" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="2.5" width="14" height="19" rx="2" stroke="#1b4965" stroke-width="1.8" />
+          <path d="M6.5 8h7M6.5 11.5h7M6.5 15h4" stroke="#1b4965" stroke-width="1.6" stroke-linecap="round" />
+          <circle cx="17.5" cy="17.5" r="4.5" fill="#1b4965" />
+          <path d="M15.6 17.5l1.3 1.3 2.5-2.6" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <div>
+          <span class="brand-name">AP Reconcile</span>
+          <span class="brand-scope" id="batch-scope">Accounts Payable Exception Queue</span>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <span class="health-badge" id="health-meta">Checking engine</span>
+        <button type="button" class="btn-secondary hidden" id="toggle-upload-btn">New Batch</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="surface upload-panel" id="upload-panel">
+      <div class="upload-head">
+        <div>
+          <h1>Run Supplier Batch Reconciliation</h1>
+          <p class="muted">Upload a multi-page supplier invoice PDF and the matching ERP AP export workbook.</p>
+        </div>
+      </div>
+
+      <form class="upload-form" id="upload-form">
+        <label class="dropzone" id="pdf-dropzone" for="pdf-input">
+          <input id="pdf-input" type="file" accept=".pdf" required />
+          <span class="dropzone-tag">Supplier PDF</span>
+          <span class="dropzone-title" id="pdf-label">Choose or drop .pdf batch</span>
+          <span class="dropzone-meta" id="pdf-meta">Multi-page digital invoices, scanned pages, or credit notes</span>
+        </label>
+
+        <label class="dropzone" id="erp-dropzone" for="erp-input">
+          <input id="erp-input" type="file" accept=".xlsx,.xlsm" required />
+          <span class="dropzone-tag">ERP AP Workbook</span>
+          <span class="dropzone-title" id="erp-label">Choose or drop .xlsx export</span>
+          <span class="dropzone-meta" id="erp-meta">Requires AP_Invoices and AP_Lines sheets (AP_CreditNotes optional)</span>
+        </label>
+
+        <div class="upload-actions">
+          <button type="submit" class="btn-primary" id="run-btn">Run Reconciliation</button>
+          <span class="run-status" id="run-status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="error-banner hidden" id="error-box" role="alert">
+      <div class="error-head">
+        <h2 id="error-title">Validation Error</h2>
+        <button type="button" class="btn-ghost" id="dismiss-error-btn">Dismiss</button>
+      </div>
+      <div id="error-body"></div>
+    </section>
+
+    <section id="results-area" class="hidden">
+      <section class="surface tieout-strip" id="tieout-strip"></section>
+
+      <section class="surface bridge-strip" id="bridge-strip"></section>
+
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="pills" id="status-pills"></div>
+        </div>
+        <div class="toolbar-right">
+          <input type="search" id="search-input" class="search-box" placeholder="Search doc no or PO" aria-label="Filter documents" />
+          <span class="usage-meta" id="usage-line"></span>
+          <button type="button" class="btn-secondary" id="download-btn">Download 4-Sheet Excel</button>
+        </div>
+      </div>
+
+      <div class="workbench">
+        <section class="surface table-panel">
+          <table class="doc-table">
+            <thead>
+              <tr>
+                <th>Document</th>
+                <th>Status</th>
+                <th>PDF Pages</th>
+                <th>ERP Refs</th>
+                <th class="num">PDF Total</th>
+                <th class="num">ERP Total</th>
+                <th class="num">Variance (IDR)</th>
+              </tr>
+            </thead>
+            <tbody id="docs-tbody"></tbody>
+          </table>
+        </section>
+
+        <aside class="surface inspector" id="detail-panel">
+          <p class="muted">Select a row from the queue to inspect discrepancies, deterministic math checks, and the source PDF page.</p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="Enlarged page view">
+    <div class="lightbox-bar">
+      <span id="lightbox-caption"></span>
+      <button type="button" class="btn-secondary" id="lightbox-close">Close</button>
+    </div>
+    <img id="lightbox-img" alt="Enlarged supplier invoice page" />
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
