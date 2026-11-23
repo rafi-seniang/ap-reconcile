@@ -1,4 +1,4 @@
-"""PDF extraction service coordinating page splitting, concurrent LLM calls, stitching, and math-gate retries."""
+"""PDF extraction service coordinating page rendering, concurrent LLM calls, stitching, and math-gate retries."""
 
 import asyncio
 import logging
@@ -37,21 +37,24 @@ def _assemble_parse_and_verify_pages(pages: list[ExtractedPage]) -> list[ParsedD
 
 def _tally_page_extraction_tokens(
     page_results: list[tuple[ExtractedPage, TokenCount]],
-) -> tuple[list[ExtractedPage], int, int, int, int]:
+) -> tuple[list[ExtractedPage], int, int, int, int, int]:
     extracted_pages: list[ExtractedPage] = []
     api_calls = 0
+    fallback_calls = 0
     cached_hits = 0
     input_tokens = 0
     output_tokens = 0
     for extracted_page, tokens in page_results:
         extracted_pages.append(extracted_page)
+        if tokens.used_fallback:
+            fallback_calls += 1
         if tokens.from_cache:
             cached_hits += 1
         else:
             api_calls += 1
             input_tokens += tokens.input_tokens
             output_tokens += tokens.output_tokens
-    return extracted_pages, api_calls, cached_hits, input_tokens, output_tokens
+    return extracted_pages, api_calls, fallback_calls, cached_hits, input_tokens, output_tokens
 
 
 class ExtractionService:
@@ -62,10 +65,13 @@ class ExtractionService:
         settings: Settings,
         primary_extractor: PageExtractor,
         retry_extractor: PageExtractor | None = None,
+        *,
+        fallback_model_name: str | None = None,
     ) -> None:
         self._settings = settings
         self._primary_extractor = primary_extractor
         self._retry_extractor = retry_extractor
+        self._fallback_model_name = fallback_model_name
 
     @property
     def provider_name(self) -> str:
@@ -79,6 +85,10 @@ class ExtractionService:
     def retry_model_name(self) -> str | None:
         return self._retry_extractor.model_name if self._retry_extractor is not None else None
 
+    @property
+    def fallback_model_name(self) -> str | None:
+        return self._fallback_model_name
+
     async def close(self) -> None:
         """Close underlying extractor clients."""
         await self._primary_extractor.close()
@@ -89,7 +99,7 @@ class ExtractionService:
         self,
         page_payloads: list[PdfPagePayload],
         concurrency_gate: asyncio.Semaphore,
-    ) -> tuple[list[ExtractedPage], int, int, int, int]:
+    ) -> tuple[list[ExtractedPage], int, int, int, int, int]:
         total_pages = len(page_payloads)
 
         async def extract_single_page(payload: PdfPagePayload) -> tuple[ExtractedPage, TokenCount]:
@@ -108,7 +118,7 @@ class ExtractionService:
         payload_by_page_number: dict[int, PdfPagePayload],
         total_pages: int,
         concurrency_gate: asyncio.Semaphore,
-    ) -> tuple[ParsedDocument, int, int, int, int]:
+    ) -> tuple[ParsedDocument, int, int, int, int, int]:
         async def retry_single_page(page_number: int) -> tuple[ExtractedPage, TokenCount]:
             async with concurrency_gate:
                 printed_page, tokens = await retry_extractor.extract_page(
@@ -119,8 +129,8 @@ class ExtractionService:
                 return ExtractedPage(page_number=page_number, printed=printed_page), tokens
 
         retried_results = await asyncio.gather(*(retry_single_page(page_num) for page_num in document.pages))
-        retried_pages, retry_calls, retry_cached, retry_in, retry_out = _tally_page_extraction_tokens(
-            list(retried_results)
+        retried_pages, retry_calls, retry_fallbacks, retry_cached, retry_in, retry_out = (
+            _tally_page_extraction_tokens(list(retried_results))
         )
         candidates = _assemble_parse_and_verify_pages(retried_pages)
         if len(candidates) == 1:
@@ -139,8 +149,8 @@ class ExtractionService:
                     old_failure_count,
                     new_failure_count,
                 )
-                return candidate, retry_calls, retry_cached, retry_in, retry_out
-        return document, retry_calls, retry_cached, retry_in, retry_out
+                return candidate, retry_calls, retry_fallbacks, retry_cached, retry_in, retry_out
+        return document, retry_calls, retry_fallbacks, retry_cached, retry_in, retry_out
 
     async def _retry_documents_failing_math_gate(
         self,
@@ -148,9 +158,9 @@ class ExtractionService:
         payload_by_page_number: dict[int, PdfPagePayload],
         total_pages: int,
         concurrency_gate: asyncio.Semaphore,
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int, int, int, int]:
         if self._retry_extractor is None:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
 
         retry_jobs: list[tuple[int, ParsedDocument, list[str]]] = []
         for doc_index, document in enumerate(parsed_documents):
@@ -166,7 +176,7 @@ class ExtractionService:
                 retry_jobs.append((doc_index, document, failure_reasons))
 
         if not retry_jobs:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
 
         retry_extractor = self._retry_extractor
         retry_outcomes = await asyncio.gather(
@@ -183,22 +193,24 @@ class ExtractionService:
             )
         )
         total_retry_calls = 0
+        total_retry_fallbacks = 0
         total_retry_cached = 0
         total_retry_in = 0
         total_retry_out = 0
-        for (doc_index, _, _), (best_doc, calls, cached, in_tok, out_tok) in zip(
+        for (doc_index, _, _), (best_doc, calls, fallbacks, cached, in_tok, out_tok) in zip(
             retry_jobs, retry_outcomes, strict=True
         ):
             parsed_documents[doc_index] = best_doc
             total_retry_calls += calls
+            total_retry_fallbacks += fallbacks
             total_retry_cached += cached
             total_retry_in += in_tok
             total_retry_out += out_tok
-        return total_retry_calls, total_retry_cached, total_retry_in, total_retry_out
+        return total_retry_calls, total_retry_fallbacks, total_retry_cached, total_retry_in, total_retry_out
 
-    async def extract_supplier_pdf(self, pdf_path: Path | str) -> BatchExtractionOutput:
-        """Split a supplier PDF, extract pages concurrently, assemble documents, and run 1x math-gate retry."""
-        page_payloads = load_pdf_pages(pdf_path, render_dpi=self._settings.pdf_render_dpi)
+    async def extract_supplier_pdf(self, pdf_source: Path | str | bytes) -> BatchExtractionOutput:
+        """Render a supplier PDF, extract pages concurrently, assemble documents, and run 1x math-gate retry."""
+        page_payloads = load_pdf_pages(pdf_source, render_dpi=self._settings.pdf_render_dpi)
         payload_by_page_number = {payload.page_number: payload for payload in page_payloads}
         concurrency_gate = asyncio.Semaphore(self._settings.llm_concurrency)
         started_at = time.perf_counter()
@@ -206,12 +218,13 @@ class ExtractionService:
         (
             extracted_pages,
             primary_calls,
+            primary_fallbacks,
             cached_pages,
             primary_in_tokens,
             primary_out_tokens,
         ) = await self._extract_primary_pages(page_payloads, concurrency_gate)
         parsed_documents = _assemble_parse_and_verify_pages(extracted_pages)
-        retry_calls, retry_cached, retry_in_tokens, retry_out_tokens = (
+        retry_calls, retry_fallbacks, retry_cached, retry_in_tokens, retry_out_tokens = (
             await self._retry_documents_failing_math_gate(
                 parsed_documents, payload_by_page_number, len(page_payloads), concurrency_gate
             )
@@ -222,8 +235,10 @@ class ExtractionService:
             provider=self.provider_name,
             model=self.primary_model_name,
             retry_model=self.retry_model_name,
+            fallback_model=self.fallback_model_name,
             primary_calls=primary_calls,
             retry_calls=retry_calls,
+            fallback_calls=primary_fallbacks + retry_fallbacks,
             cached_pages=cached_pages + retry_cached,
             input_tokens=primary_in_tokens,
             output_tokens=primary_out_tokens,

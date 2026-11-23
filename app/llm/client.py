@@ -1,11 +1,11 @@
-"""Unified LiteLLM multimodal page extractor with exponential backoff, JSON repair, and optional disk cache."""
+"""Unified LiteLLM multimodal page extractor with instant failover, backoff, JSON repair, and disk cache."""
 
 import asyncio
 import base64
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, get_args
 
@@ -45,15 +45,16 @@ class UpstreamUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class TokenCount:
-    """Token counts returned by a single page extraction call."""
+    """Token and failover accounting returned by a single page extraction call."""
 
     input_tokens: int = 0
     output_tokens: int = 0
     from_cache: bool = False
+    used_fallback: bool = False
 
 
 class PageExtractor(Protocol):
-    """Minimal page extraction contract so offline tests can inject a deterministic fake."""
+    """Minimal page extraction contract so offline tests and decorators compose cleanly."""
 
     provider_name: str
     model_name: str
@@ -90,7 +91,7 @@ def build_schema_outline(schema_class: type[BaseModel]) -> dict[str, Any]:
 
 
 class LiteLLMPageExtractor:
-    """Provider-agnostic multimodal extractor using LiteLLM (supports Gemini, DeepSeek, OpenAI, Claude)."""
+    """Provider-agnostic multimodal extractor using uniform OpenAI/LiteLLM parameters across all models."""
 
     def __init__(
         self,
@@ -101,11 +102,10 @@ class LiteLLMPageExtractor:
         timeout_seconds: float = 90.0,
         max_output_tokens: int = 4096,
         max_retries: int = 3,
-        is_retry_role: bool = False,
     ) -> None:
         if not api_key:
             raise ValueError("LiteLLMPageExtractor requires a non-empty API key")
-        # Allow LiteLLM to drop provider-unsupported knobs (such as temperature on Gemini 3.5 Flash-Lite).
+        # Let LiteLLM drop unsupported sampling/reasoning parameters per model capability matrix.
         litellm.drop_params = True
         litellm.suppress_debug_info = True
 
@@ -116,20 +116,17 @@ class LiteLLMPageExtractor:
         self._timeout_seconds = timeout_seconds
         self._max_output_tokens = max_output_tokens
         self._max_retries = max_retries
-        self._is_retry_role = is_retry_role
         self._schema_outline_json = json.dumps(build_schema_outline(PrintedPage), ensure_ascii=False)
 
-    def _build_completion_kwargs(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        is_math_retry: bool,
-    ) -> dict[str, Any]:
+    def _build_completion_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        # Uniform settings: reasoning_effort="none" disables CoT on DeepSeek/OpenAI and maps to minimal/low on Gemini 3.
         request_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
             "api_key": self._api_key,
             "temperature": 0.0,
+            "seed": 0,
+            "reasoning_effort": "none",
             "max_tokens": self._max_output_tokens,
             "timeout": self._timeout_seconds,
             "num_retries": 0,
@@ -137,10 +134,6 @@ class LiteLLMPageExtractor:
         }
         if self._api_base:
             request_kwargs["api_base"] = self._api_base
-        if self.provider_name == "deepseek":
-            request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-        elif self.provider_name == "gemini":
-            request_kwargs["reasoning_effort"] = "medium" if (is_math_retry or self._is_retry_role) else "low"
         return request_kwargs
 
     async def _complete_with_backoff(
@@ -148,9 +141,8 @@ class LiteLLMPageExtractor:
         messages: list[dict[str, Any]],
         *,
         page_number: int,
-        is_math_retry: bool,
     ) -> tuple[str, TokenCount]:
-        request_kwargs = self._build_completion_kwargs(messages, is_math_retry=is_math_retry)
+        request_kwargs = self._build_completion_kwargs(messages)
         total_attempts = self._max_retries + 1
         last_error: Exception | None = None
 
@@ -215,11 +207,7 @@ class LiteLLMPageExtractor:
             },
         ]
 
-        first_text, first_tokens = await self._complete_with_backoff(
-            messages,
-            page_number=page.page_number,
-            is_math_retry=bool(retry_feedback),
-        )
+        first_text, first_tokens = await self._complete_with_backoff(messages, page_number=page.page_number)
         try:
             return PrintedPage.model_validate_json(extract_json_object_text(first_text)), first_tokens
         except ValidationError as exc:
@@ -239,9 +227,7 @@ class LiteLLMPageExtractor:
             )
 
         repaired_text, repair_tokens = await self._complete_with_backoff(
-            messages,
-            page_number=page.page_number,
-            is_math_retry=True,
+            messages, page_number=page.page_number
         )
         combined_tokens = TokenCount(
             input_tokens=first_tokens.input_tokens + repair_tokens.input_tokens,
@@ -256,6 +242,42 @@ class LiteLLMPageExtractor:
 
     async def close(self) -> None:
         return None
+
+
+class FallbackPageExtractor:
+    """Decorator that fails over immediately to a secondary PageExtractor when the primary raises UpstreamUnavailable."""
+
+    def __init__(self, primary_extractor: PageExtractor, fallback_extractor: PageExtractor) -> None:
+        self._primary = primary_extractor
+        self._fallback = fallback_extractor
+        self.provider_name = primary_extractor.provider_name
+        self.model_name = primary_extractor.model_name
+        self.fallback_model_name = fallback_extractor.model_name
+
+    async def extract_page(
+        self,
+        page: PdfPagePayload,
+        total_pages: int,
+        retry_feedback: list[str] | None = None,
+    ) -> tuple[PrintedPage, TokenCount]:
+        try:
+            return await self._primary.extract_page(page, total_pages, retry_feedback=retry_feedback)
+        except UpstreamUnavailable as primary_error:
+            logger.warning(
+                "Primary model %s failed on page %s (%s); failing over immediately to %s",
+                self._primary.model_name,
+                page.page_number,
+                primary_error,
+                self._fallback.model_name,
+            )
+            printed, tokens = await self._fallback.extract_page(
+                page, total_pages, retry_feedback=retry_feedback
+            )
+            return printed, replace(tokens, used_fallback=True)
+
+    async def close(self) -> None:
+        await self._primary.close()
+        await self._fallback.close()
 
 
 class DiskCachedExtractor:
@@ -276,7 +298,6 @@ class DiskCachedExtractor:
         hasher.update(b"\0")
         hasher.update(SYSTEM_EXTRACTION_PROMPT.encode("utf-8"))
         hasher.update(b"\0")
-        # Hash deterministic rendered PNG bytes because PyMuPDF sub-PDF trailers vary across runs.
         hasher.update(page.png_bytes)
         if retry_feedback:
             hasher.update(b"\0retry\0")

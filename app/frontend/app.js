@@ -57,8 +57,8 @@ async function loadHealth() {
   try {
     const res = await fetch("/health");
     const data = await res.json();
-    document.getElementById("health-meta").textContent =
-      `${data.provider} / ${data.model}` + (data.retry_model ? ` (retry: ${data.retry_model})` : "");
+    const fallbackNote = data.fallback_model ? ` | fallback: ${data.fallback_model}` : "";
+    document.getElementById("health-meta").textContent = `${data.model}${fallbackNote}`;
   } catch {
     document.getElementById("health-meta").textContent = "Engine unreachable";
   }
