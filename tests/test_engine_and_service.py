@@ -8,10 +8,14 @@ from typing import Any
 import openpyxl
 import pymupdf
 
-from app.erp.schemas import ErpDocument, ErpLine, ErpWorkbook
-from app.extraction.llm_client import DiskCachedExtractor, TokenCount
-from app.extraction.parser import normalize_key, parse_assembled_document
-from app.extraction.schemas import (
+from app.engine.math_rules import verify_pdf_document_math
+from app.engine.reconcile_engine import reconcile_batch
+from app.kernel import build_reconciliation_service
+from app.llm.client import DiskCachedExtractor, TokenCount
+from app.llm.parser import normalize_key, parse_assembled_document
+from app.llm.pdf_splitter import PdfPagePayload
+from app.schemas.erp import ErpDocument, ErpLine, ErpWorkbook
+from app.schemas.invoice import (
     AssembledDocument,
     AssembledLine,
     DocumentType,
@@ -19,14 +23,9 @@ from app.extraction.schemas import (
     PrintedLine,
     PrintedPage,
 )
-from app.extraction.splitter import PdfPagePayload
-from app.reconcile.engine import reconcile_batch
-from app.reconcile.math_rules import verify_pdf_document_math
-from app.reconcile.schemas import DocStatus
-from app.reporting.csv_writer import write_csv_and_json_reports
-from app.reporting.excel_writer import write_excel_report
-from app.service import ReconciliationService
-from config.settings import Settings
+from app.schemas.reconciliation import DocStatus
+from app.services.report_service import ReportService, write_excel_report
+from config.settings import Settings, infer_provider_name
 
 
 def _pdf_doc(
@@ -264,7 +263,7 @@ def test_engine_covers_all_eight_r8_statuses_with_zero_unexplained_variance(tmp_
     assert alt_by_key["PKIINV2026090008"].status == DocStatus.AMOUNT_MISMATCH
     assert alt_report.control_totals.unexplained_variance == Decimal("0")
 
-    # Verify Excel (4 sheets) and CSV/JSON writers.
+    # Verify Excel (4 sheets) and JSON batch report outputs.
     xlsx = write_excel_report(report, tmp_path / "recon.xlsx")
     wb = openpyxl.load_workbook(xlsx)
     assert wb.sheetnames == [
@@ -273,7 +272,8 @@ def test_engine_covers_all_eight_r8_statuses_with_zero_unexplained_variance(tmp_
         "Line_Discrepancies",
         "Audit_Trail",
     ]
-    files = write_csv_and_json_reports(report, tmp_path)
+    files = ReportService().write_batch_outputs(report, tmp_path / "batch_out")
+    assert set(files.keys()) == {"excel", "json"}
     assert all(p.is_file() for p in files.values())
 
 
@@ -433,7 +433,9 @@ async def test_service_math_gate_retry_repairs_primary_misread_and_cache_hits(tm
         llm_input_price_per_million_usd=1.0,
         llm_output_price_per_million_usd=2.0,
     )
-    svc = ReconciliationService(settings, primary_cached, retry_cached)
+    svc = build_reconciliation_service(
+        settings, primary_extractor=primary_cached, retry_extractor=retry_cached
+    )
 
     first = await svc.reconcile(pdf_path, erp_path, output_dir=tmp_path / "out")
     assert first.report.documents[0].status == DocStatus.MATCHED
@@ -451,3 +453,10 @@ async def test_service_math_gate_retry_repairs_primary_misread_and_cache_hits(tm
     assert second.report.usage.cached_pages == 2
     assert primary_inner.calls == 1
     assert retry_inner.calls == 1
+
+
+def test_settings_infers_provider_names_across_litellm_models() -> None:
+    assert infer_provider_name("gemini/gemini-3.5-flash-lite") == "gemini"
+    assert infer_provider_name("openai/deepseek-flash", "https://api.deepseek.com") == "deepseek"
+    assert infer_provider_name("anthropic/claude-sonnet-5.5") == "anthropic"
+    assert infer_provider_name("openai/gpt-4o-mini") == "openai"

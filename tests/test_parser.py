@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.extraction.parser import (
+from app.llm.parser import (
     normalize_currency,
     normalize_key,
     parse_assembled_document,
@@ -13,7 +13,7 @@ from app.extraction.parser import (
     parse_decimal_amount,
     parse_discount_pct,
 )
-from app.extraction.schemas import AssembledDocument, AssembledLine, PrintedLine
+from app.schemas.invoice import AssembledDocument, AssembledLine, PrintedLine
 
 
 def test_normalize_key_unifies_slashes_hyphens_and_case() -> None:

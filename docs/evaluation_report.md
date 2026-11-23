@@ -64,11 +64,11 @@ Generated programmatically by [`eval/adversarial_eval.py`](../eval/adversarial_e
 7. **Unbooked valid invoice**: routed to `MISSING_IN_ERP`.
 
 - **Result**: **7 / 7 cases passed (100%)**, **Unexplained Variance = Rp 0**, **8 primary + 2 retry calls** (only illegible Page 2 and supplier-error Page 7), **9.3 s** (list eq. USD 0.010).
-- **Refactored engine replay**: All cached `gemini-3.5-flash-lite` and `deepseek-flash` extractions for September 2026 (16/16), Synthetic October 2026 (13/13), and Adversarial November 2026 (7/7) passed with 0 regressions (`Unexplained Variance = Rp 0`).
+- **Refactored layered engine replay (LiteLLM)**: Verified live end-to-end on September 2026 via the unified `LiteLLMPageExtractor` (`openai/deepseek-flash`, single API key, 16+1 calls, **30.7 s**): **16 / 16** statuses, **16 / 16** totals, **16 / 16** line discrepancies, **Unexplained Variance = Rp 0**, alongside **76 / 76** passing unit and API tests (including rate-limit and upload-size guard tests).
 
 ## 4. Observed Failure Cases and Guardrails Tested
 
-1. **Upstream capacity outages (`gemini-3.8-flash` HTTP 503/504)**: Encountered live during testing when `gemini-3.8-flash` hit high demand on the free tier. The client rotates across configured keys with bounded exponential backoff, then fails loudly with `UpstreamUnavailable` (HTTP 503 / CLI exit code 3) rather than silently fabricating empty pages.
+1. **Upstream capacity outages (`gemini-3.8-flash` HTTP 503/504)**: Encountered live during testing when `gemini-3.8-flash` hit high demand on the free tier. The LiteLLM client applies bounded exponential backoff on transient errors, then fails loudly with `UpstreamUnavailable` (HTTP 503 / CLI exit code 3) rather than silently fabricating empty pages.
 2. **Broken ERP Excel schema (`tests/test_excel_loader.py` and `tests/test_api.py`)**: Missing sheets (`AP_Lines`), missing columns, unparseable dates (`32/99/2026`), text in amount columns (`TBD`), and orphan line `Entry ID` values fail upstream with HTTP 422 and zero LLM calls, returning every offending `Sheet!Row Column` in one response.
 3. **Cache key non-determinism caught in CLI testing**: PyMuPDF single-page `tobytes()` writes a fresh PDF trailer ID on every run, causing cache misses on repeat Gemini runs. Fixed by hashing the deterministic rendered page PNG bytes as the cache key (verified in `tests/test_engine_and_service.py`).
 4. **Known extraction edge cases routed to human review**: Severely blurred or low-DPI (<100 DPI) phone photos, handwritten margin notes, or continuation pages whose supplier prints a running subtotal on every page can fail the math gate and route to `NEEDS_REVIEW`. Uncertain documents go to the AP Review Queue rather than being auto-approved.
