@@ -1,25 +1,24 @@
 """Assemble page-level extractions into logical supplier documents without merging duplicate invoices."""
 
-from app.extraction.parser import normalize_key
-from app.extraction.schemas import AssembledDocument, AssembledLine, ExtractedPage
+from app.llm.parser import normalize_key
+from app.schemas.invoice import AssembledDocument, AssembledLine, ExtractedPage
 
 
-def _is_continuation_of(page: ExtractedPage, current: AssembledDocument) -> bool:
+def _is_continuation_of_open_document(page: ExtractedPage, current_document: AssembledDocument) -> bool:
     """Join only when the previous page left the invoice open without closing on a grand total."""
-    current_closed = bool(current.grand_total_raw and current.grand_total_raw.strip())
-    if current_closed:
+    current_is_closed = bool(current_document.grand_total_raw and current_document.grand_total_raw.strip())
+    if current_is_closed:
         return False
 
     printed = page.printed
     if printed.doc_number_raw is None or not printed.doc_number_raw.strip():
         return True
 
-    return normalize_key(printed.doc_number_raw) == normalize_key(current.doc_number_raw)
+    return normalize_key(printed.doc_number_raw) == normalize_key(current_document.doc_number_raw)
 
 
 def assemble_documents(pages: list[ExtractedPage]) -> list[AssembledDocument]:
     """Group sequential ExtractedPage objects into logical single- or multi-page documents."""
-    # Sort by PDF page order so concurrent extraction responses stitch deterministically.
     ordered_pages = sorted(pages, key=lambda item: item.page_number)
     documents: list[AssembledDocument] = []
 
@@ -27,18 +26,18 @@ def assemble_documents(pages: list[ExtractedPage]) -> list[AssembledDocument]:
         printed = page.printed
         page_lines = [AssembledLine(source_page=page.page_number, printed=line) for line in printed.lines]
 
-        if documents and _is_continuation_of(page, documents[-1]):
-            current = documents[-1]
-            current.pages.append(page.page_number)
-            current.lines.extend(page_lines)
-            if current.subtotal_raw is None and printed.subtotal_raw is not None:
-                current.subtotal_raw = printed.subtotal_raw
-            if current.dpp_raw is None and printed.dpp_raw is not None:
-                current.dpp_raw = printed.dpp_raw
-            if current.ppn_raw is None and printed.ppn_raw is not None:
-                current.ppn_raw = printed.ppn_raw
-            if current.grand_total_raw is None and printed.grand_total_raw is not None:
-                current.grand_total_raw = printed.grand_total_raw
+        if documents and _is_continuation_of_open_document(page, documents[-1]):
+            current_document = documents[-1]
+            current_document.pages.append(page.page_number)
+            current_document.lines.extend(page_lines)
+            if current_document.subtotal_raw is None and printed.subtotal_raw is not None:
+                current_document.subtotal_raw = printed.subtotal_raw
+            if current_document.dpp_raw is None and printed.dpp_raw is not None:
+                current_document.dpp_raw = printed.dpp_raw
+            if current_document.ppn_raw is None and printed.ppn_raw is not None:
+                current_document.ppn_raw = printed.ppn_raw
+            if current_document.grand_total_raw is None and printed.grand_total_raw is not None:
+                current_document.grand_total_raw = printed.grand_total_raw
             continue
 
         documents.append(

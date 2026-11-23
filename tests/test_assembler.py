@@ -1,7 +1,7 @@
 """Unit tests for multi-page document assembly and duplicate PDF invoice preservation."""
 
-from app.extraction.assembler import assemble_documents
-from app.extraction.schemas import ExtractedPage, PrintedLine, PrintedPage
+from app.llm.assembler import assemble_documents
+from app.schemas.invoice import ExtractedPage, PrintedLine, PrintedPage
 
 
 def _line(code: str, amount: str) -> PrintedLine:

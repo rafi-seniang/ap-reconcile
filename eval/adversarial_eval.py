@@ -11,9 +11,9 @@ from typing import Any
 import openpyxl
 import pymupdf
 
-from app.reconcile.math_rules import compute_dpp_nilai_lain, compute_line_amount, compute_ppn, compute_total
-from app.reconcile.schemas import DocStatus, ReconciliationReport
-from app.service import ReconciliationService
+from app.engine.math_rules import compute_dpp_nilai_lain, compute_line_amount, compute_ppn, compute_total
+from app.kernel import build_reconciliation_service
+from app.schemas.reconciliation import DocStatus, ReconciliationReport
 from config.settings import Settings
 
 _pymupdf: Any = pymupdf
@@ -400,7 +400,7 @@ def score_adversarial(report: ReconciliationReport, expected: tuple[AdvExpectati
 async def _run(args: argparse.Namespace) -> int:
     pdf_path, erp_path, expected = generate_adversarial_november(args.gen_dir)
     settings = Settings(extraction_cache_dir=args.cache_dir)
-    service = ReconciliationService.from_settings(settings)
+    service = build_reconciliation_service(settings)
     try:
         result = await service.reconcile(pdf_path, erp_path, output_dir=args.out)
     finally:

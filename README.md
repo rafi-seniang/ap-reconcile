@@ -12,7 +12,7 @@ Requires Python 3.11+. On macOS/Linux, use `source .venv/bin/activate` and `cp`.
 # 1. Create virtual environment and install dependencies
 python -m venv .venv && .venv\Scripts\activate && pip install -e ".[dev]"
 
-# 2. Configure provider and API key (Gemini or OpenAI-compatible such as DeepSeek)
+# 2. Configure LiteLLM model and API key (Gemini, DeepSeek, OpenAI, or Claude)
 copy .env.example .env
 
 # 3. Run the offline unit and API test suite (no API key required)
@@ -33,10 +33,10 @@ Visual reading is isolated to a multimodal LLM, while all arithmetic, normalizat
 ERP Excel (.xlsx) ──► Fail-Fast Schema Validator (all Sheet!Row errors before LLM spend)
                                 │
                                 ▼
-Supplier PDF ──► PyMuPDF Page Splitter (1-page native PDF + 200 DPI PNG)
+Supplier PDF ──► PyMuPDF Page Renderer (200 DPI PNG)
                                 │
                                 ▼
-              Multimodal Verbatim Extractor (gemini native PDF | openai_compat PNG)
+              Unified LiteLLM Vision Extractor (Gemini, DeepSeek, OpenAI, Claude)
                                 │
                                 ▼
               Deterministic Assembler, Parser & R1-R4 Math Gate (1x targeted retry)
@@ -45,16 +45,19 @@ Supplier PDF ──► PyMuPDF Page Splitter (1-page native PDF + 200 DPI PNG)
               Deterministic Matcher & R5-R8 Engine (Unexplained Variance = Rp 0)
                                 │
                                 ▼
-         Outputs: 4-Sheet Excel Report | CSV + JSON | FastAPI AP Review Queue UI
+         Outputs: 4-Sheet Excel Report | JSON | FastAPI AP Review Queue UI
 ```
 
-| Folder | Responsibility |
+| Folder / File | Responsibility |
 | --- | --- |
-| `app/erp/` | Strict ERP workbook validator (`AP_Invoices`, `AP_Lines`, `AP_CreditNotes`, `Export_Info`) with cell-level `Sheet!Row` errors |
-| `app/extraction/` | Page splitter, provider-agnostic Vision LLM clients with disk cache, multi-page assembler, and ID/EN parser |
-| `app/reconcile/` | `Decimal` + `ROUND_HALF_UP` rules R1-R4, two-pass multiset SKU line matcher, R5-R8 engine, and plain-language explanations |
-| `app/reporting/` | 4-sheet formatted Excel workbook (`Executive_Summary`, `Reconciliation_Report`, `Line_Discrepancies`, `Audit_Trail`) + CSV/JSON |
-| `app/api/` | Thin FastAPI router (`routes.py`) serving a separated vanilla HTML/CSS/JS Review Queue workbench (`app/api/static/`) |
+| `app/kernel.py` | Composition root wiring `Settings`, LiteLLM extractors, services, guards, and FastAPI lifecycle |
+| `app/controllers/` | Thin FastAPI routes (`reconciliation_controller.py`) and request guards (`guards.py`: per-IP rate limit and upload caps) |
+| `app/services/` | Business workflows: `erp_service.py`, `extraction_service.py`, `reconciliation_service.py`, and 4-sheet `report_service.py` |
+| `app/engine/` | Pure deterministic logic (`Decimal` R1-R4 math rules, 2-pass SKU matcher, R5-R8 engine, plain-language explanations) |
+| `app/llm/` | Unified `LiteLLMPageExtractor` with backoff and disk cache, PyMuPDF page splitter, ID/EN parser, and multi-page assembler |
+| `app/prompts/` | Verbatim extraction and prompt-injection-resistant retry templates |
+| `app/schemas/` | Shared Pydantic contracts (`erp.py`, `invoice.py`, `reconciliation.py`) |
+| `app/frontend/` | Separated vanilla HTML/CSS/JS AP Review Queue workbench |
 | `eval/` | Audited ground truth (`ground_truth_sep2026.json`), Sep 2026 evaluator, synthetic Oct 2026, and adversarial Nov 2026 suites |
 | `docs/` | [CFO Summary](docs/customer_summary.md), [Extraction Benchmark](docs/extraction_benchmark.md), and [Evaluation Report](docs/evaluation_report.md) |
 
@@ -66,7 +69,7 @@ Supplier PDF ──► PyMuPDF Page Splitter (1-page native PDF + 200 DPI PNG)
 4. **Explicit R3/R4 tax-base policy (`0148`)**: Default `TAX_BASE_ERROR_AS_NEEDS_REVIEW=true` routes 100%-DPP invoices to `NEEDS_REVIEW` (requires revised Faktur Pajak), configurable to `AMOUNT_MISMATCH` via `.env`.
 5. **Fail-fast ERP contract validation**: Broken sheets, columns, dates, or numbers return HTTP 422 / exit code 2 with every `Sheet!Row Column` error before spending any LLM tokens.
 6. **Deterministic check gates over LLM confidence scores**: Auto-clearance requires every `CheckResult` gate (`parse_*`, line math, subtotal, DPP, PPN, grand total) to pass rather than trusting uncalibrated self-reported scores.
-7. **Provider-agnostic client**: During live testing, `gemini-3.8-flash` hit upstream HTTP 503/504 capacity outages. Switching `.env` to `gemini-3.5-flash-lite` or `deepseek-flash` required zero code changes and produced identical 16/16 results.
+7. **Unified LiteLLM client and lightweight API guards**: During live testing, `gemini-3.8-flash` hit upstream HTTP 503/504 capacity outages. Using one `LiteLLMPageExtractor` allows switching `.env` between `gemini/gemini-3.5-flash-lite`, `openai/deepseek-flash`, OpenAI, or Claude with zero code changes, while configurable per-IP in-memory rate limits and upload size caps protect LLM spend without requiring Redis locally.
 
 ## Evaluation Summary
 
@@ -106,7 +109,7 @@ Full control totals (Rp 0 tie-out), 7 adversarial cases, and observed failure gu
 - **Proper CI/CD and regression gating**: Add GitHub Actions to run `ruff`, `mypy --strict`, offline `pytest`, and scheduled golden-dataset evals so prompt or model changes cannot silently regress accuracy before deployment.
 - **Deeper extraction and model research**: Benchmark additional vision models (`gemini-3.8-flash` once upstream capacity stabilizes, `gemini-4-neon`, `gemini-4-hydrogen`, `deepseek-pro`, `claude-haiku-5.5`, `claude-sonnet-5.5`, and `gpt-luna-6.2`), structured-output settings, and render DPI trade-offs (150 vs 200 vs 300 DPI) across providers.
 - **Systematic edge-case testing**: Collect and test harder real-world Indonesian AP edge cases including overlapping wet stamps, handwritten adjustments, low-DPI phone photos, out-of-order scanned pages, multi-currency FX rounding, invoice-wide discounts, and PPh 23 withholding.
-- **Production workflow hardening**: Add 3-way match (PO + GRN + Indonesian e-Faktur QR/NSFP), persistent PostgreSQL storage with reviewer sign-offs and ERP reversal journals, and scheduled email/SFTP ingestion with Slack exception alerts.
+- **Production workflow hardening**: Add 3-way match (PO + GRN + Indonesian e-Faktur QR/NSFP), Redis-backed distributed rate limiting and shared extraction cache for multi-worker scaling, SSO/RBAC, persistent PostgreSQL storage with reviewer sign-offs and ERP reversal journals, optional flat CSV exports, and scheduled email/SFTP ingestion with Slack exception alerts.
 
 ## How AI Tools Were Used
 

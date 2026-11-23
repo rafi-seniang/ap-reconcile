@@ -9,8 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from app.reconcile.schemas import DocStatus, ReconciliationReport
-from app.service import ReconciliationService
+from app.kernel import build_reconciliation_service
+from app.schemas.reconciliation import DocStatus, ReconciliationReport
 from config.settings import Settings
 
 DEFAULT_SEP_DIR = Path(os.environ.get("SEP_DATA_DIR", "data/sep2026"))
@@ -110,8 +110,6 @@ def score_report(report: ReconciliationReport, expected: tuple[ExpectedDoc, ...]
 
 async def _run(args: argparse.Namespace) -> int:
     overrides: dict[str, Any] = {}
-    if args.provider:
-        overrides["llm_provider"] = args.provider
     if args.model:
         overrides["llm_model"] = args.model
     if args.retry_model is not None:
@@ -130,7 +128,7 @@ async def _run(args: argparse.Namespace) -> int:
         overrides["extraction_cache_dir"] = args.cache_dir
 
     settings = Settings(**overrides)
-    service = ReconciliationService.from_settings(settings)
+    service = build_reconciliation_service(settings)
     try:
         result = await service.reconcile(args.pdf, args.erp, output_dir=args.out)
     finally:
@@ -158,7 +156,6 @@ def main() -> int:
         default=DEFAULT_SEP_DIR / "ERP_AP_Export_Sep2026.xlsx",
     )
     parser.add_argument("--out", type=Path, default=Path("output/eval_sep2026"))
-    parser.add_argument("--provider", choices=["gemini", "openai_compat"], default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--retry-model", default=None)
     parser.add_argument("--base-url", default=None)
