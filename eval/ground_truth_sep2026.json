@@ -1,0 +1,140 @@
+{
+  "dataset": "PT Prima Kertas Indonesia (September 2026)",
+  "verification_method": "Audited directly from source PDF pages and ERP_AP_Export_Sep2026.xlsx under R1-R8 rules with Rp 0 unexplained batch variance",
+  "control_totals": {
+    "pdf_net_total": "307896675",
+    "erp_net_total": "311153348",
+    "net_difference": "-3256673",
+    "unexplained_variance": "0"
+  },
+  "documents": [
+    {
+      "doc_key": "PKIINV2026090141",
+      "status": "MATCHED",
+      "pdf_total": "3323676",
+      "erp_total": "3323676",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090142",
+      "status": "MATCHED",
+      "pdf_total": "4667772",
+      "erp_total": "4667772",
+      "required_reason_codes": ["DOC_NO_FORMAT_NORMALISED"],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090143",
+      "status": "MATCHED_WITHIN_TOLERANCE",
+      "pdf_total": "17651608",
+      "erp_total": "17651609",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090144",
+      "status": "AMOUNT_MISMATCH",
+      "pdf_total": "10557224",
+      "erp_total": "10029974",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": ["AMP-110"]
+    },
+    {
+      "doc_key": "PKIINV2026090145",
+      "status": "AMOUNT_MISMATCH",
+      "pdf_total": "12894914",
+      "erp_total": "12228914",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": ["PK-A4-80-RM"]
+    },
+    {
+      "doc_key": "PKIINV2026090146",
+      "status": "MISSING_IN_ERP",
+      "pdf_total": "15688629",
+      "erp_total": "0",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090147",
+      "status": "DUPLICATE_IN_ERP",
+      "pdf_total": "17238178",
+      "erp_total": "34476356",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090148",
+      "status": "NEEDS_REVIEW",
+      "pdf_total": "22942248",
+      "erp_total": "22737407",
+      "required_reason_codes": ["TAX_BASE_WRONG_DPP_NOT_11_12"],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090149",
+      "status": "NEEDS_REVIEW",
+      "pdf_total": "26858753",
+      "erp_total": "26747753",
+      "required_reason_codes": ["PDF_INTERNAL_SUBTOTAL_ERROR"],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090150",
+      "status": "MATCHED",
+      "pdf_total": "21596635",
+      "erp_total": "21596635",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090151",
+      "status": "AMOUNT_MISMATCH",
+      "pdf_total": "29811015",
+      "erp_total": "29533515",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": ["DLV-JKT"]
+    },
+    {
+      "doc_key": "PKIINV2026090152",
+      "status": "MATCHED",
+      "pdf_total": "15619088",
+      "erp_total": "15619088",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090153",
+      "status": "MATCHED",
+      "pdf_total": "101656444",
+      "erp_total": "101656444",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090154",
+      "status": "NEEDS_REVIEW",
+      "pdf_total": "8362851",
+      "erp_total": "8362851",
+      "required_reason_codes": ["PO_NUMBER_MISMATCH"],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKICN2026090012",
+      "status": "MATCHED",
+      "pdf_total": "-972360",
+      "erp_total": "-972360",
+      "required_reason_codes": [],
+      "expected_line_diff_skus": []
+    },
+    {
+      "doc_key": "PKIINV2026090155",
+      "status": "MISSING_IN_PDF",
+      "pdf_total": "0",
+      "erp_total": "3493714",
+      "required_reason_codes": ["ERP_STATUS_PARKED"],
+      "expected_line_diff_skus": []
+    }
+  ]
+}
