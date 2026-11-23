@@ -25,7 +25,7 @@ All local baselines were run in an isolated Python 3.11 environment using each l
 | **`RapidOCR` standalone** (200 DPI PNG) | 8/8 tokens read, **0 table structure** | N/A | 77 flat unordered lines | ~7.5 s / scan page | ~450 MB | USD 0 | No (loses columns and row order) |
 | **`Docling`** (`TableFormer ACCURATE` + `RapidOCR`) | 8/8 tokens read, **layout quirks** | 34/34 rows in 2 Markdown tables | Unstructured Markdown | **60.1 s warm** (135.1 s cold) | **~2.0 GB** (1,496 MB venv + 506 MB weights) | USD 0 local + **Stage-2 LLM** | No (still needs Stage-2 LLM or brittle parser) |
 | **Vision LLM: `deepseek-flash`** (200 DPI PNG) | **Exact (100%)** | **34/34 lines exact (100%)** | **Validated Pydantic JSON** | **33.7 s** | **415 MB** (0 MB ML weights) | **USD 0.01 actual** | **Yes (16/16 status, Rp 0 unexplained)** |
-| **Vision LLM: `gemini-3.6-flash`** (Native PDF) | **Exact (100%)** | **34/34 lines exact (100%)** | **Validated Pydantic JSON** | **39.8 s** | **415 MB** (0 MB ML weights) | **USD 0 free tier** (est. USD 0.081 paid) | **Yes (16/16 status, Rp 0 unexplained)** |
+| **Vision LLM: `gemini-3.5-flash-lite`** (Native PDF) | **Exact (100%)** | **34/34 lines exact (100%)** | **Validated Pydantic JSON** | **22.7 s** | **415 MB** (0 MB ML weights) | **USD 0 free tier** (est. USD 0.045 paid) | **Yes (16/16 status, Rp 0 unexplained)** |
 
 ---
 
@@ -55,16 +55,16 @@ Tested fairly with `TableFormerMode.ACCURATE` and `RapidOcrOptions`, `Docling` r
 
 ## Vision LLM Provider Comparison (September 2026)
 
-| Metric | `gemini-3.6-flash` (Native 1-Page PDF) | `deepseek-flash` (200 DPI PNG) |
+| Metric | `gemini-3.5-flash-lite` (Native 1-Page PDF) | `deepseek-flash` (200 DPI PNG) |
 | --- | --- | --- |
 | Status / Totals / Line Discrepancies | **16/16**, **16/16**, **16/16** | **16/16**, **16/16**, **16/16** |
 | Unexplained Batch Variance | **Rp 0** | **Rp 0** |
 | Primary + Math-Gate Retry Calls | 16 + 1 (only Page 9 / `0149`) | 16 + 1 (only Page 9 / `0149`) |
-| Input / Output Tokens | 13,878 in / 15,452 out | 32,242 in / 14,335 out |
-| Latency (concurrency=3) | 39.8 s | 33.7 s |
-| Actual Spend | USD 0 (free tier, 20 RPD/key) | **USD 0.01** (API balance USD 1.78 to USD 1.77) |
+| Input / Output Tokens | 13,735 in / 15,330 out | 32,242 in / 14,335 out |
+| Latency (concurrency=3) | **22.7 s** | 33.7 s |
+| Actual Spend | USD 0 (free tier, list eq. USD 0.045) | **USD 0.01** (API balance USD 1.78 to USD 1.77) |
 
-Native PDF input on Gemini uses ~57% fewer input tokens than 200 DPI PNG input on DeepSeek, while DeepSeek V4.1 (`deepseek-flash`) provides faster wall-clock latency and predictable pay-as-you-go throughput without free-tier daily caps.
+Native PDF input on `gemini-3.5-flash-lite` uses ~57% fewer input tokens and completes in 22.7 s, while `deepseek-flash` provides predictable pay-as-you-go throughput at USD 0.01 per 16-page batch without free-tier daily caps. `gemini-3.8-flash` was also tested live and returned upstream HTTP 503/504 capacity errors on the free tier, validating the provider-agnostic switch and `UpstreamUnavailable` fail-fast behavior.
 
 ---
 

@@ -31,9 +31,9 @@ class Settings(BaseSettings):
         default="gemini",
         description="gemini sends native 1-page PDFs; openai_compat sends rendered page PNGs",
     )
-    llm_model: str = Field(default="gemini-3.6-flash", description="Primary page extraction model")
+    llm_model: str = Field(default="gemini-3.5-flash-lite", description="Primary page extraction model")
     llm_retry_model: str | None = Field(
-        default="gemini-3.6-flash",
+        default="gemini-3.5-flash-lite",
         description="Model for 1x targeted retry when a document fails math or parse checks",
     )
     llm_base_url: str | None = Field(
