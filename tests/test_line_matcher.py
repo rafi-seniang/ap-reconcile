@@ -2,9 +2,9 @@
 
 from decimal import Decimal
 
-from app.erp.schemas import ErpDocument, ErpLine
-from app.extraction.schemas import ParsedDocument, ParsedLine
-from app.reconcile.line_matcher import match_document_lines
+from app.engine.line_matcher import match_document_lines
+from app.schemas.erp import ErpDocument, ErpLine
+from app.schemas.invoice import ParsedDocument, ParsedLine
 
 
 def _pdf_line(

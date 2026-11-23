@@ -7,11 +7,10 @@ import openpyxl
 import pymupdf
 from fastapi.testclient import TestClient
 
-from app.api.routes import create_app
-from app.extraction.llm_client import TokenCount, UpstreamUnavailable
-from app.extraction.schemas import PrintedLine, PrintedPage
-from app.extraction.splitter import PdfPagePayload
-from app.service import ReconciliationService
+from app.kernel import build_reconciliation_service, create_web_application
+from app.llm.client import TokenCount, UpstreamUnavailable
+from app.llm.pdf_splitter import PdfPagePayload
+from app.schemas.invoice import PrintedLine, PrintedPage
 from config.settings import Settings
 
 
@@ -128,7 +127,8 @@ def _make_erp_bytes(tmp_path: Path, broken: bool = False) -> bytes:
 
 def test_api_reconcile_happy_path_and_downloads(tmp_path: Path) -> None:
     stub = _StubExtractor()
-    app = create_app(service=ReconciliationService(Settings(), stub, None))
+    service = build_reconciliation_service(Settings(), primary_extractor=stub, retry_extractor=None)
+    app = create_web_application(reconciliation_service=service)
 
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
@@ -165,7 +165,8 @@ def test_api_reconcile_happy_path_and_downloads(tmp_path: Path) -> None:
 
 def test_api_returns_422_with_cell_issues_and_zero_llm_calls_on_broken_erp(tmp_path: Path) -> None:
     stub = _StubExtractor()
-    app = create_app(service=ReconciliationService(Settings(), stub, None))
+    service = build_reconciliation_service(Settings(), primary_extractor=stub, retry_extractor=None)
+    app = create_web_application(reconciliation_service=service)
 
     with TestClient(app) as client:
         res = client.post(
@@ -189,7 +190,8 @@ def test_api_returns_422_with_cell_issues_and_zero_llm_calls_on_broken_erp(tmp_p
 
 def test_api_returns_503_when_upstream_llm_unavailable(tmp_path: Path) -> None:
     stub = _StubExtractor(fail=True)
-    app = create_app(service=ReconciliationService(Settings(), stub, None))
+    service = build_reconciliation_service(Settings(), primary_extractor=stub, retry_extractor=None)
+    app = create_web_application(reconciliation_service=service)
 
     with TestClient(app) as client:
         res = client.post(
@@ -205,3 +207,62 @@ def test_api_returns_503_when_upstream_llm_unavailable(tmp_path: Path) -> None:
         )
         assert res.status_code == 503
         assert res.json()["error"] == "upstream_unavailable"
+
+
+def test_api_enforces_per_ip_rate_limit_and_upload_size_guard(tmp_path: Path) -> None:
+    stub = _StubExtractor()
+    settings = Settings(
+        rate_limit_requests_per_window=2,
+        rate_limit_window_seconds=60,
+        max_pdf_upload_mb=1,
+        max_erp_upload_mb=1,
+    )
+    service = build_reconciliation_service(settings, primary_extractor=stub, retry_extractor=None)
+    app = create_web_application(settings, reconciliation_service=service)
+    pdf_bytes = _make_pdf_bytes(tmp_path)
+    erp_bytes = _make_erp_bytes(tmp_path)
+
+    with TestClient(app) as client:
+        # First request: oversized PDF rejected before calling the LLM.
+        oversized = client.post(
+            "/api/reconcile",
+            files={
+                "pdf_file": ("huge.pdf", b"x" * (1024 * 1024 + 1), "application/pdf"),
+                "erp_file": (
+                    "erp.xlsx",
+                    erp_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+        assert oversized.status_code == 413
+        assert stub.calls == 0
+
+        # Second request succeeds (2/2 window used).
+        ok_res = client.post(
+            "/api/reconcile",
+            files={
+                "pdf_file": ("sep.pdf", pdf_bytes, "application/pdf"),
+                "erp_file": (
+                    "erp.xlsx",
+                    erp_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+        assert ok_res.status_code == 200
+
+        # Third request within window returns HTTP 429 before calling the LLM again.
+        blocked = client.post(
+            "/api/reconcile",
+            files={
+                "pdf_file": ("sep.pdf", pdf_bytes, "application/pdf"),
+                "erp_file": (
+                    "erp.xlsx",
+                    erp_bytes,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+        assert blocked.status_code == 429
+        assert stub.calls == 1

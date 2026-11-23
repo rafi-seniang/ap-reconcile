@@ -8,8 +8,8 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from app.erp.excel_loader import load_erp_workbook
-from app.erp.schemas import ErpValidationError
+from app.schemas.erp import ErpValidationError
+from app.services.erp_service import load_erp_workbook
 
 
 def _write_sample_erp(path: Path) -> Path:

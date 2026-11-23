@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
-from app.extraction.schemas import DocumentType
+from app.schemas.invoice import DocumentType
 
 
 class ErpValidationIssue(BaseModel):
@@ -23,8 +23,8 @@ class ErpValidationIssue(BaseModel):
             location += f"!Row {self.row}"
         if self.column:
             location += f", Column '{self.column}'"
-        val = f" (value={self.raw_value!r})" if self.raw_value is not None else ""
-        return f"{location}{val}: {self.message}"
+        value_note = f" (value={self.raw_value!r})" if self.raw_value is not None else ""
+        return f"{location}{value_note}: {self.message}"
 
 
 class ErpValidationError(ValueError):

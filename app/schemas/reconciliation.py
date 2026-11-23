@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from app.extraction.schemas import CheckResult, DocumentType, ExtractionUsage
+from app.schemas.invoice import CheckResult, DocumentType, ExtractionUsage
 
 
 class DocStatus(StrEnum):
