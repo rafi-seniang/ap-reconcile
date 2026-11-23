@@ -99,10 +99,13 @@ Full control totals (Rp 0 tie-out), 7 adversarial cases, and observed failure gu
 - **Thin ERP adapters**: Map SAP, Accurate, Jurnal, or NetSuite exports into `ErpWorkbook` while keeping the strict validator unchanged.
 - **Drift alerts**: Monitor per-supplier retry and `NEEDS_REVIEW` rates monthly to catch vendor invoice template changes early.
 
-## Known Limitations & Next Week Roadmap
+## Known Limitations & What I Would Do With More Time
 
 - **Current limitations**: Single currency per batch (whole-rupiah IDR), no direct PO/GRN master lookup, no invoice-wide header discounts or PPh 23 withholding lines, in-memory run history (latest 10 runs), and no automatic re-ordering of physically shuffled multi-page scans.
-- **With another week**: Add 3-way match (PO + GRN + Indonesian e-Faktur QR/NSFP), persistent PostgreSQL review queue with reviewer sign-offs and ERP reversal journals, multi-currency + PPh 23 policy support, and scheduled email/SFTP ingestion with Slack exception alerts.
+- **Proper CI/CD and regression gating**: Add GitHub Actions to run `ruff`, `mypy --strict`, offline `pytest`, and scheduled golden-dataset evals so prompt or model changes cannot silently regress accuracy before deployment.
+- **Deeper extraction and model research**: Benchmark additional vision models, structured-output settings, and render DPI trade-offs (150 vs 200 vs 300 DPI) to find the best accuracy-to-cost frontier across providers.
+- **Systematic edge-case testing**: Collect and test harder real-world Indonesian AP edge cases including overlapping wet stamps, handwritten adjustments, low-DPI phone photos, out-of-order scanned pages, multi-currency FX rounding, invoice-wide discounts, and PPh 23 withholding.
+- **Production workflow hardening**: Add 3-way match (PO + GRN + Indonesian e-Faktur QR/NSFP), persistent PostgreSQL storage with reviewer sign-offs and ERP reversal journals, and scheduled email/SFTP ingestion with Slack exception alerts.
 
 ## How AI Tools Were Used
 
