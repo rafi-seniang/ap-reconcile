@@ -2,6 +2,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -461,13 +462,20 @@ def _read_export_metadata_sheet(workbook: openpyxl.Workbook) -> dict[str, str]:
     return export_info
 
 
-def load_erp_workbook(path: Path | str) -> ErpWorkbook:
-    """Load and strictly validate all sheets of an ERP AP Excel export before spending LLM tokens."""
-    workbook_path = Path(path)
+def _open_erp_workbook(source: Path | str | bytes) -> openpyxl.Workbook:
+    if isinstance(source, bytes):
+        if not source:
+            raise ValueError("ERP workbook byte payload is empty")
+        return openpyxl.load_workbook(BytesIO(source), data_only=True)
+    workbook_path = Path(source)
     if not workbook_path.is_file():
         raise FileNotFoundError(f"ERP workbook not found: {workbook_path}")
+    return openpyxl.load_workbook(workbook_path, data_only=True)
 
-    workbook = openpyxl.load_workbook(workbook_path, data_only=True)
+
+def load_erp_workbook(source: Path | str | bytes) -> ErpWorkbook:
+    """Load and strictly validate all sheets of an ERP AP Excel export before spending LLM tokens."""
+    workbook = _open_erp_workbook(source)
     issues: list[ErpValidationIssue] = []
 
     for required_sheet in ("AP_Invoices", "AP_Lines"):
@@ -533,6 +541,6 @@ def load_erp_workbook(path: Path | str) -> ErpWorkbook:
 class ErpService:
     """Service wrapper exposing strict ERP Excel loading and contract validation."""
 
-    def load_and_validate_workbook(self, workbook_path: Path | str) -> ErpWorkbook:
+    def load_and_validate_workbook(self, workbook_source: Path | str | bytes) -> ErpWorkbook:
         """Load and validate an ERP AP Excel export, raising ErpValidationError on any schema issue."""
-        return load_erp_workbook(workbook_path)
+        return load_erp_workbook(workbook_source)

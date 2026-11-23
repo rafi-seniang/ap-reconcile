@@ -1,6 +1,5 @@
 """Thin FastAPI controller for the AP Review Queue UI, PDF page previews, and Excel report downloads."""
 
-import tempfile
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -75,6 +74,7 @@ def create_reconciliation_router(
             "provider": service.provider_name,
             "model": service.primary_model_name,
             "retry_model": service.retry_model_name,
+            "fallback_model": service.fallback_model_name,
         }
 
     @router.post("/api/reconcile", response_class=JSONResponse)
@@ -92,39 +92,32 @@ def create_reconciliation_router(
         )
         service: ReconciliationService = request.app.state.reconciliation_service
 
-        with tempfile.TemporaryDirectory(prefix="ap_reconcile_") as temp_dir:
-            temp_path = Path(temp_dir)
-            pdf_temp_path = temp_path / "batch.pdf"
-            erp_temp_path = temp_path / "erp.xlsx"
-            pdf_temp_path.write_bytes(pdf_bytes)
-            erp_temp_path.write_bytes(erp_bytes)
-
-            try:
-                result = await service.reconcile(
-                    pdf_temp_path,
-                    erp_temp_path,
-                    pdf_display_name=pdf_name,
-                    erp_display_name=erp_name,
-                )
-            except ErpValidationError as exc:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "error": "erp_validation_failed",
-                        "detail": str(exc),
-                        "issues": [issue.model_dump() for issue in exc.issues],
-                    },
-                )
-            except UpstreamUnavailable as exc:
-                return JSONResponse(
-                    status_code=503,
-                    content={"error": "upstream_unavailable", "detail": str(exc)},
-                )
-            except ValueError as exc:
-                return JSONResponse(
-                    status_code=422,
-                    content={"error": "invalid_input", "detail": str(exc)},
-                )
+        try:
+            result = await service.reconcile(
+                pdf_bytes,
+                erp_bytes,
+                pdf_display_name=pdf_name,
+                erp_display_name=erp_name,
+            )
+        except ErpValidationError as exc:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "erp_validation_failed",
+                    "detail": str(exc),
+                    "issues": [issue.model_dump() for issue in exc.issues],
+                },
+            )
+        except UpstreamUnavailable as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "upstream_unavailable", "detail": str(exc)},
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "invalid_input", "detail": str(exc)},
+            )
 
         excel_bytes = service.render_excel_bytes(result.report)
         run_store: InMemoryRunStore = request.app.state.run_store

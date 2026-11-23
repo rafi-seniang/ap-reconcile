@@ -34,10 +34,17 @@ def infer_provider_name(model_name: str, api_base: str | None = None) -> str:
     return "openai"
 
 
+def _secret_to_str(secret: SecretStr | None) -> str | None:
+    if secret is None:
+        return None
+    cleaned = secret.get_secret_value().strip()
+    return cleaned or None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # LiteLLM model routing (prefix with provider, e.g. gemini/gemini-3.5-flash-lite or openai/deepseek-flash)
+    # Primary and optional retry / automatic failover LiteLLM models
     llm_model: str = Field(
         default="gemini/gemini-3.5-flash-lite",
         description="Primary LiteLLM vision model for page extraction",
@@ -46,14 +53,31 @@ class Settings(BaseSettings):
         default="gemini/gemini-3.5-flash-lite",
         description="Optional LiteLLM model for 1x targeted retry when a document fails math checks",
     )
+    llm_fallback_model: str | None = Field(
+        default=None,
+        description="Optional LiteLLM failover model invoked immediately when the primary model fails",
+    )
     llm_base_url: str | None = Field(
         default=None,
-        description="Optional custom API base URL (e.g. https://api.deepseek.com)",
+        description="Optional custom API base URL for primary model",
     )
-    llm_api_key: SecretStr | None = Field(default=None, description="Provider API key")
+    llm_fallback_base_url: str | None = Field(
+        default=None,
+        description="Optional custom API base URL for fallback model",
+    )
+
+    # Standard provider API keys (matching LiteLLM conventions) plus generic overrides
+    gemini_api_key: SecretStr | None = Field(default=None)
+    deepseek_api_key: SecretStr | None = Field(default=None)
+    openai_api_key: SecretStr | None = Field(default=None)
+    anthropic_api_key: SecretStr | None = Field(default=None)
+    llm_api_key: SecretStr | None = Field(default=None, description="Generic primary API key override")
+    llm_fallback_api_key: SecretStr | None = Field(
+        default=None, description="Generic fallback API key override"
+    )
     secrets_env_path: str | None = Field(
         default=None,
-        description="Optional path to a local secrets file checked when LLM_API_KEY is unset",
+        description="Optional path to a local secrets file checked when env keys are unset",
     )
 
     # Concurrency, timeouts, and image rendering
@@ -92,23 +116,62 @@ class Settings(BaseSettings):
     max_pdf_upload_mb: int = Field(default=25, ge=1, description="Maximum allowed PDF upload size in MB")
     max_erp_upload_mb: int = Field(default=10, ge=1, description="Maximum allowed ERP workbook size in MB")
 
-    def resolve_api_key(self) -> str:
-        """Return the configured provider API key, failing loudly if none is set."""
-        if self.llm_api_key is not None and self.llm_api_key.get_secret_value().strip():
-            return self.llm_api_key.get_secret_value().strip()
+    def _lookup_provider_key(self, provider: str) -> str | None:
+        direct_by_provider: dict[str, SecretStr | None] = {
+            "gemini": self.gemini_api_key,
+            "deepseek": self.deepseek_api_key,
+            "openai": self.openai_api_key,
+            "anthropic": self.anthropic_api_key,
+        }
+        direct_value = _secret_to_str(direct_by_provider.get(provider))
+        if direct_value:
+            return direct_value
 
         if self.secrets_env_path:
             secret_map = read_local_secrets_file(Path(self.secrets_env_path))
-            provider = infer_provider_name(self.llm_model, self.llm_base_url)
-            preferred_env_names: dict[str, tuple[str, ...]] = {
+            env_names_by_provider: dict[str, tuple[str, ...]] = {
                 "gemini": ("GEMINI_API_KEY",),
                 "deepseek": ("DEEPSEEK_API_KEY",),
                 "anthropic": ("ANTHROPIC_API_KEY",),
                 "openai": ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
             }
-            for env_name in preferred_env_names.get(provider, ("OPENAI_API_KEY", "GEMINI_API_KEY")):
+            for env_name in env_names_by_provider.get(provider, ("OPENAI_API_KEY", "GEMINI_API_KEY")):
                 if env_name in secret_map:
                     return secret_map[env_name]
+        return None
 
+    def resolve_api_key_for_model(
+        self,
+        model_name: str,
+        api_base: str | None = None,
+        *,
+        explicit_override: SecretStr | None = None,
+    ) -> str | None:
+        """Resolve an API key for a given model from explicit override, provider env var, or secrets file."""
+        override_value = _secret_to_str(explicit_override)
+        if override_value:
+            return override_value
+        provider = infer_provider_name(model_name, api_base)
+        return self._lookup_provider_key(provider)
+
+    def resolve_primary_api_key(self) -> str:
+        """Return the primary model API key, failing loudly if none is configured."""
+        resolved = self.resolve_api_key_for_model(
+            self.llm_model, self.llm_base_url, explicit_override=self.llm_api_key
+        )
+        if resolved:
+            return resolved
         provider = infer_provider_name(self.llm_model, self.llm_base_url)
-        raise ValueError(f"Missing API key for provider '{provider}'. Set LLM_API_KEY in .env.")
+        raise ValueError(
+            f"Missing API key for provider '{provider}'. Set {provider.upper()}_API_KEY or LLM_API_KEY in .env."
+        )
+
+    def resolve_fallback_api_key(self) -> str | None:
+        """Return the fallback model API key when llm_fallback_model is set, or None if unavailable."""
+        if not self.llm_fallback_model or not self.llm_fallback_model.strip():
+            return None
+        return self.resolve_api_key_for_model(
+            self.llm_fallback_model,
+            self.llm_fallback_base_url,
+            explicit_override=self.llm_fallback_api_key or self.llm_api_key,
+        )

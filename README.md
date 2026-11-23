@@ -54,7 +54,7 @@ Supplier PDF ──► PyMuPDF Page Renderer (200 DPI PNG)
 | `app/controllers/` | Thin FastAPI routes (`reconciliation_controller.py`) and request guards (`guards.py`: per-IP rate limit and upload caps) |
 | `app/services/` | Business workflows: `erp_service.py`, `extraction_service.py`, `reconciliation_service.py`, and 4-sheet `report_service.py` |
 | `app/engine/` | Pure deterministic logic (`Decimal` R1-R4 math rules, 2-pass SKU matcher, R5-R8 engine, plain-language explanations) |
-| `app/llm/` | Unified `LiteLLMPageExtractor` with backoff and disk cache, PyMuPDF page splitter, ID/EN parser, and multi-page assembler |
+| `app/llm/` | Unified `LiteLLMPageExtractor`, instant `FallbackPageExtractor`, disk cache, in-memory PDF renderer, ID/EN parser, and assembler |
 | `app/prompts/` | Verbatim extraction and prompt-injection-resistant retry templates |
 | `app/schemas/` | Shared Pydantic contracts (`erp.py`, `invoice.py`, `reconciliation.py`) |
 | `app/frontend/` | Separated vanilla HTML/CSS/JS AP Review Queue workbench |
@@ -69,7 +69,7 @@ Supplier PDF ──► PyMuPDF Page Renderer (200 DPI PNG)
 4. **Explicit R3/R4 tax-base policy (`0148`)**: Default `TAX_BASE_ERROR_AS_NEEDS_REVIEW=true` routes 100%-DPP invoices to `NEEDS_REVIEW` (requires revised Faktur Pajak), configurable to `AMOUNT_MISMATCH` via `.env`.
 5. **Fail-fast ERP contract validation**: Broken sheets, columns, dates, or numbers return HTTP 422 / exit code 2 with every `Sheet!Row Column` error before spending any LLM tokens.
 6. **Deterministic check gates over LLM confidence scores**: Auto-clearance requires every `CheckResult` gate (`parse_*`, line math, subtotal, DPP, PPN, grand total) to pass rather than trusting uncalibrated self-reported scores.
-7. **Unified LiteLLM client and lightweight API guards**: During live testing, `gemini-3.8-flash` hit upstream HTTP 503/504 capacity outages. Using one `LiteLLMPageExtractor` allows switching `.env` between `gemini/gemini-3.5-flash-lite`, `openai/deepseek-flash`, OpenAI, or Claude with zero code changes, while configurable per-IP in-memory rate limits and upload size caps protect LLM spend without requiring Redis locally.
+7. **Unified LiteLLM client with instant provider failover**: During live testing, Gemini free-tier endpoints intermittently hit HTTP 503 high-demand spikes. `LiteLLMPageExtractor` sends uniform parameters (`temperature=0.0`, `seed=0`, `reasoning_effort="none"`, `drop_params=True`) across providers, while optional `LLM_FALLBACK_MODEL` (`FallbackPageExtractor`) fails over immediately to `deepseek/deepseek-flash` without dropping the batch.
 
 ## Evaluation Summary
 

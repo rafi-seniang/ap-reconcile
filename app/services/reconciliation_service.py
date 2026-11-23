@@ -20,6 +20,14 @@ class ReconciliationRunResult:
     output_files: dict[str, Path] = field(default_factory=dict)
 
 
+def _resolve_display_name(source: Path | str | bytes, display_name: str | None, default_name: str) -> str:
+    if display_name:
+        return display_name
+    if isinstance(source, bytes):
+        return default_name
+    return Path(source).name
+
+
 class ReconciliationService:
     """Coordinates fail-fast ERP validation, multimodal PDF extraction, deterministic tie-out, and Excel export."""
 
@@ -47,6 +55,10 @@ class ReconciliationService:
     def retry_model_name(self) -> str | None:
         return self._extraction_service.retry_model_name
 
+    @property
+    def fallback_model_name(self) -> str | None:
+        return self._extraction_service.fallback_model_name
+
     def render_excel_bytes(self, report: ReconciliationReport) -> bytes:
         """Render the reconciliation report to Excel bytes for web download."""
         return self._report_service.render_excel_bytes(report)
@@ -57,8 +69,8 @@ class ReconciliationService:
 
     async def reconcile(
         self,
-        pdf_path: Path | str,
-        erp_path: Path | str,
+        pdf_source: Path | str | bytes,
+        erp_source: Path | str | bytes,
         *,
         output_dir: Path | str | None = None,
         pdf_display_name: str | None = None,
@@ -66,14 +78,14 @@ class ReconciliationService:
     ) -> ReconciliationRunResult:
         """Validate ERP first, extract all PDF pages, run deterministic reconciliation, and export outputs."""
         # Fail fast on broken ERP workbooks before spending any LLM tokens on the supplier PDF.
-        erp_workbook = self._erp_service.load_and_validate_workbook(erp_path)
-        extraction = await self._extraction_service.extract_supplier_pdf(pdf_path)
+        erp_workbook = self._erp_service.load_and_validate_workbook(erp_source)
+        extraction = await self._extraction_service.extract_supplier_pdf(pdf_source)
 
         report = reconcile_batch(
             extraction.documents,
             erp_workbook,
-            pdf_filename=pdf_display_name or Path(pdf_path).name,
-            erp_filename=erp_display_name or Path(erp_path).name,
+            pdf_filename=_resolve_display_name(pdf_source, pdf_display_name, "supplier_invoices.pdf"),
+            erp_filename=_resolve_display_name(erp_source, erp_display_name, "erp_export.xlsx"),
             tolerance_idr=self._settings.tolerance_idr,
             tax_base_error_as_needs_review=self._settings.tax_base_error_as_needs_review,
             usage=extraction.usage,
