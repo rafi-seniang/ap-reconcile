@@ -43,7 +43,7 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
         fallback_model = None
 
     has_active_fallback = bool(fallback_model and fallback_key and fallback_model != settings.llm_model)
-    primary_max_retries = 0 if has_active_fallback else 3
+    primary_max_retries = 0 if has_active_fallback else settings.llm_max_retries
 
     def build_model_extractor(model_name: str) -> PageExtractor:
         primary_leaf = _wrap_disk_cache(
@@ -51,6 +51,8 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
                 model_name=model_name,
                 api_key=primary_key,
                 api_base=settings.llm_base_url,
+                temperature=settings.llm_temperature,
+                reasoning_effort=settings.llm_reasoning_effort,
                 timeout_seconds=settings.llm_timeout_seconds,
                 max_output_tokens=settings.llm_max_output_tokens,
                 max_retries=primary_max_retries,
@@ -65,9 +67,11 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
                 model_name=fallback_model,
                 api_key=fallback_key,
                 api_base=settings.llm_fallback_base_url,
+                temperature=settings.llm_temperature,
+                reasoning_effort=settings.llm_reasoning_effort,
                 timeout_seconds=settings.llm_timeout_seconds,
                 max_output_tokens=settings.llm_max_output_tokens,
-                max_retries=2,
+                max_retries=settings.llm_max_retries,
             ),
             settings.extraction_cache_dir,
         )
@@ -122,7 +126,7 @@ def create_web_application(
             else build_reconciliation_service(active_settings)
         )
         app.state.reconciliation_service = active_service
-        app.state.run_store = InMemoryRunStore()
+        app.state.run_store = InMemoryRunStore(max_runs=active_settings.max_stored_runs)
         try:
             yield
         finally:

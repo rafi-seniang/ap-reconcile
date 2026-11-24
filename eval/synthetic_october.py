@@ -630,7 +630,8 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Generated unseen October batch:\n  PDF: {pdf_path}\n  ERP: {erp_path}")
         return 0
 
-    settings = Settings(extraction_cache_dir=args.cache_dir)
+    overrides: dict[str, Any] = {"extraction_cache_dir": args.cache_dir} if args.cache_dir else {}
+    settings = Settings(**overrides)
     service = build_reconciliation_service(settings)
     try:
         result = await service.reconcile(pdf_path, erp_path, output_dir=args.out)
@@ -650,7 +651,7 @@ def main() -> int:
     )
     parser.add_argument("--gen-dir", type=Path, default=Path("eval/generated"))
     parser.add_argument("--out", type=Path, default=Path("output/eval_oct2026_synthetic"))
-    parser.add_argument("--cache-dir", default="eval/cache")
+    parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--generate-only", action="store_true")
     return asyncio.run(_run(parser.parse_args()))
 
