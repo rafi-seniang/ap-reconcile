@@ -570,3 +570,37 @@ async def test_fallback_extractor_recovers_immediately_on_primary_503_with_in_me
     assert result.report.usage is not None
     assert result.report.usage.fallback_model == "deepseek/deepseek-flash"
     assert result.report.usage.fallback_calls == 1
+
+
+def test_engine_flags_matching_wrong_ppn_rate_and_handles_pdf_absent_erp_duplicate() -> None:
+    # Both PDF and ERP have valid 11/12 DPP (916,667) yet wrong PPN (200,000 vs 110,000) -> must flag NEEDS_REVIEW.
+    wrong_ppn_pdf = _pdf_doc(
+        "PKI/INV/2026/10/0401",
+        subtotal="1.000.000",
+        dpp="916.667",
+        ppn="200.000",
+        total="1.200.000",
+    )
+    wrong_ppn_erp = _erp_doc(
+        "E-401",
+        "PKI/INV/2026/10/0401",
+        subtotal=1_000_000,
+        dpp=916_667,
+        ppn=200_000,
+        total=1_200_000,
+    )
+    dup_erp_a = _erp_doc("E-402A", "PKI/INV/2026/10/0402", row=3)
+    dup_erp_b = _erp_doc("E-402B", "PKI/INV/2026/10/0402", row=4)
+
+    report = reconcile_batch(
+        [wrong_ppn_pdf],
+        ErpWorkbook(documents=[wrong_ppn_erp, dup_erp_a, dup_erp_b]),
+        pdf_filename="oct.pdf",
+        erp_filename="oct.xlsx",
+    )
+    by_key = {doc.doc_number_norm: doc for doc in report.documents}
+    assert by_key["PKIINV2026100401"].status == DocStatus.NEEDS_REVIEW
+    assert "PDF_PPN_RULE_ERROR" in by_key["PKIINV2026100401"].reason_codes
+    assert by_key["PKIINV2026100402"].status == DocStatus.DUPLICATE_IN_ERP
+    assert "absent from the supplier PDF batch" in by_key["PKIINV2026100402"].plain_explanation
+    assert report.control_totals.unexplained_variance == Decimal("0")

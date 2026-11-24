@@ -222,3 +222,18 @@ def test_load_erp_workbook_rejects_excel_errors_and_duplicate_entry_ids(tmp_path
     assert ("AP_Invoices", 2, "vendor inv. no") in locations
     assert ("AP_Invoices", 2, "po no") in locations
     assert ("AP_Invoices", 4, "Entry ID") in locations
+
+
+def test_load_erp_workbook_accepts_float_line_numbers_and_excel_percentage_format(tmp_path: Path) -> None:
+    path = _write_sample_erp(tmp_path / "erp_excel_formats.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws_lines = wb["AP_Lines"]
+    ws_lines.cell(2, 2, 1.0)
+    disc_cell = ws_lines.cell(2, 8, 0.05)
+    disc_cell.number_format = "0%"
+    wb.save(path)
+
+    loaded = load_erp_workbook(path)
+    first_line = loaded.documents[0].lines[0]
+    assert first_line.line_number == 1
+    assert first_line.discount_pct == Decimal("5")
