@@ -88,7 +88,17 @@ function bindDropzone(inputId, zoneId, labelId, metaId, emptyTitle) {
     zone.classList.add("dragover");
   });
   zone.addEventListener("dragleave", () => zone.classList.remove("dragover"));
-  zone.addEventListener("drop", () => zone.classList.remove("dragover"));
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("dragover");
+    const dropped = e.dataTransfer && e.dataTransfer.files;
+    if (dropped && dropped.length > 0) {
+      const transfer = new DataTransfer();
+      transfer.items.add(dropped[0]);
+      input.files = transfer.files;
+      updateLabel();
+    }
+  });
 }
 
 function showError(title, detail, issues) {
@@ -162,8 +172,9 @@ function renderTieOutAndBridge(report) {
     const totalIn = u.input_tokens + u.retry_input_tokens;
     const totalOut = u.output_tokens + u.retry_output_tokens;
     const costTxt = u.estimated_cost_usd != null ? ` | $${Number(u.estimated_cost_usd).toFixed(4)}` : "";
+    const fbTxt = u.fallback_calls > 0 && u.fallback_model ? ` | fallback ${u.fallback_calls}x (${u.fallback_model})` : "";
     document.getElementById("usage-line").textContent =
-      `${u.model} | ${(u.latency_ms / 1000).toFixed(1)}s | ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out${costTxt}`;
+      `${u.model}${fbTxt} | ${(u.latency_ms / 1000).toFixed(1)}s | ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out${costTxt}`;
   }
 }
 
@@ -242,6 +253,88 @@ function selectDocument(normKey) {
   if (doc) renderDetail(doc, doc.pdf_pages[0] || null);
 }
 
+function buildHeaderAndErpPeekHtml(doc, auditTrail) {
+  const docRefs = (auditTrail || []).filter((ref) => ref.doc_number_norm === doc.doc_number_norm);
+  const sumHeaderField = (side, fieldName) => {
+    const matching = docRefs.filter(
+      (r) => r.source_side === side && r.level === "HEADER" && r.field_or_item === fieldName && r.numeric_value != null
+    );
+    if (!matching.length) return null;
+    return matching.reduce((acc, r) => acc + Number(r.numeric_value), 0);
+  };
+
+  const headerFields = ["Subtotal", "DPP", "PPN", "Grand Total"];
+  const headerRowsHtml = headerFields
+    .map((field) => {
+      const pdfVal = sumHeaderField("PDF", field);
+      const erpVal = sumHeaderField("ERP", field);
+      const diffVal = (pdfVal ?? 0) - (erpVal ?? 0);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(field)}</strong></td>
+          <td class="num">${pdfVal != null ? fmtIdr(pdfVal) : "-"}</td>
+          <td class="num">${erpVal != null ? fmtIdr(erpVal) : "-"}</td>
+          <td class="num">${pdfVal != null || erpVal != null ? fmtSignedIdr(diffVal) : "-"}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const erpLineRefs = docRefs.filter((r) => r.source_side === "ERP" && r.level === "LINE");
+  const renderErpRows = (rows) =>
+    rows
+      .map(
+        (r) => `
+      <tr>
+        <td><span class="muted">${escapeHtml(r.location)}</span></td>
+        <td><strong>${escapeHtml(r.field_or_item)}</strong><div class="muted">${escapeHtml(r.raw_value)}</div></td>
+        <td class="num">${r.numeric_value != null ? fmtIdr(r.numeric_value) : "-"}</td>
+      </tr>
+    `
+      )
+      .join("");
+
+  let erpPeekHtml = `<div class="inspector-section"><h3>ERP Workbook Rows</h3><p class="muted" style="margin:0;">No matching entry in ERP workbook.</p></div>`;
+  if (doc.erp_refs.length || erpLineRefs.length) {
+    const visibleLines = erpLineRefs.slice(0, 5);
+    const hiddenLines = erpLineRefs.slice(5);
+    const headerLoc = doc.erp_refs.length ? `Header: ${escapeHtml(doc.erp_refs.join(", "))}` : "";
+    erpPeekHtml = `
+      <div class="inspector-section">
+        <h3>ERP Workbook Rows (${erpLineRefs.length} line${erpLineRefs.length === 1 ? "" : "s"})</h3>
+        ${headerLoc ? `<div class="muted" style="margin-bottom:6px;">${headerLoc}</div>` : ""}
+        ${
+          visibleLines.length
+            ? `<table class="compact-table">
+                <thead><tr><th>Sheet!Row</th><th>Booked Item</th><th class="num">Amount</th></tr></thead>
+                <tbody>${renderErpRows(visibleLines)}</tbody>
+              </table>`
+            : ""
+        }
+        ${
+          hiddenLines.length
+            ? `<details class="erp-more">
+                <summary>Show ${hiddenLines.length} more ERP row${hiddenLines.length === 1 ? "" : "s"}</summary>
+                <table class="compact-table"><tbody>${renderErpRows(hiddenLines)}</tbody></table>
+              </details>`
+            : ""
+        }
+      </div>
+    `;
+  }
+
+  return `
+    <div class="inspector-section">
+      <h3>Header Totals (PDF vs ERP)</h3>
+      <table class="compact-table">
+        <thead><tr><th>Field</th><th class="num">PDF</th><th class="num">ERP</th><th class="num">Diff</th></tr></thead>
+        <tbody>${headerRowsHtml}</tbody>
+      </table>
+    </div>
+    ${erpPeekHtml}
+  `;
+}
+
 function renderDetail(doc, activePage) {
   const panel = document.getElementById("detail-panel");
   const title = doc.pdf_doc_number_raw || doc.erp_doc_number_raw || doc.doc_number_norm;
@@ -317,8 +410,9 @@ function renderDetail(doc, activePage) {
       <p><strong>Finding:</strong> ${escapeHtml(doc.plain_explanation)}</p>
       <p><strong>Next Action:</strong> ${escapeHtml(doc.suggested_action)}</p>
     </div>
-    ${checksHtml}
+    ${buildHeaderAndErpPeekHtml(doc, currentReport ? currentReport.audit_trail : [])}
     ${linesHtml}
+    ${checksHtml}
     ${previewHtml}
   `;
 
@@ -396,7 +490,13 @@ function bindEvents() {
 
     try {
       const res = await fetch("/api/reconcile", { method: "POST", body: form });
-      const payload = await res.json();
+      const rawText = await res.text();
+      let payload = {};
+      try {
+        payload = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        payload = { detail: rawText || res.statusText };
+      }
       if (!res.ok) {
         showError(
           payload.error === "erp_validation_failed" ? "ERP Workbook Schema Validation Failed" : "Reconciliation Error",

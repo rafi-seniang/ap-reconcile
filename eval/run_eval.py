@@ -163,7 +163,7 @@ def main() -> int:
     parser.add_argument("--output-price", type=float, default=None)
     parser.add_argument("--retry-input-price", type=float, default=None)
     parser.add_argument("--retry-output-price", type=float, default=None)
-    parser.add_argument("--cache-dir", default="eval/cache")
+    parser.add_argument("--cache-dir", default=None)
     return asyncio.run(_run(parser.parse_args()))
 
 
