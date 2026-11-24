@@ -1,5 +1,6 @@
 """Deterministic parsers for Indonesian and English printed amounts, percentages, dates, and keys."""
 
+import math
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -8,8 +9,9 @@ from typing import Any
 from app.schemas.invoice import AssembledDocument, CheckResult, ParsedDocument, ParsedLine
 
 _NON_ALNUM_PATTERN = re.compile(r"[^A-Z0-9]")
-_GROUPED_INT_PATTERN = re.compile(r"^\d{1,3}([.,])\d{3}(?:\1\d{3})*$")
-_GROUPED_DEC_PATTERN = re.compile(r"^(\d+|\d{1,3}([.,])\d{3}(?:\2\d{3})*)([.,])(\d{1,2})$")
+_ALPHA_TOKEN_PATTERN = re.compile(r"[A-Za-z]+\.?")
+_GROUPED_INT_PATTERN = re.compile(r"^[1-9]\d{0,2}([.,])\d{3}(?:\1\d{3})*$")
+_GROUPED_DEC_PATTERN = re.compile(r"^((?:0|[1-9]\d*)|[1-9]\d{0,2}([.,])\d{3}(?:\2\d{3})*)([.,])(\d{1,4})$")
 _CURRENCY_TOKENS = ("RP.", "RP", "IDR", "USD", "SGD", "EUR", "$")
 
 _INDONESIAN_TO_ENGLISH_MONTH: dict[str, str] = {
@@ -24,8 +26,11 @@ _INDONESIAN_TO_ENGLISH_MONTH: dict[str, str] = {
     "agu": "Aug",
     "agt": "Aug",
     "ags": "Aug",
+    "agst": "Aug",
+    "sept": "Sep",
     "oktober": "October",
     "okt": "Oct",
+    "nopember": "November",
     "nop": "Nov",
     "desember": "December",
     "des": "Dec",
@@ -36,6 +41,10 @@ _ISO_AND_NAMED_DATE_FORMATS = (
     "%Y/%m/%d",
     "%d %B %Y",
     "%d %b %Y",
+    "%d-%B-%Y",
+    "%d-%b-%Y",
+    "%d/%B/%Y",
+    "%d/%b/%Y",
     "%B %d, %Y",
     "%b %d, %Y",
     "%B %d %Y",
@@ -59,13 +68,38 @@ def normalize_currency(raw: str | None) -> str:
     if raw is None:
         return "IDR"
     cleaned = raw.strip().rstrip(".").upper()
-    if not cleaned or cleaned in ("RP", "IDR"):
+    if not cleaned or cleaned in ("RP", "IDR", "RUPIAH"):
         return "IDR"
     return cleaned
 
 
+def _strip_currency_tokens(text: str) -> str:
+    working = text.strip()
+    if working.endswith(",-"):
+        working = working[:-2].strip()
+    upper_text = working.upper()
+    for token in _CURRENCY_TOKENS:
+        if upper_text.startswith(token):
+            working = working[len(token) :].strip()
+            break
+    if working.endswith(",-"):
+        working = working[:-2].strip()
+    upper_text = working.upper()
+    for token in _CURRENCY_TOKENS:
+        if upper_text.endswith(token):
+            working = working[: -len(token)].strip()
+            break
+    if working.endswith(",-"):
+        working = working[:-2].strip()
+    return working
+
+
 def _strip_sign_and_currency(raw_text: str) -> tuple[bool, str] | None:
-    working = raw_text.strip()
+    working = raw_text.replace("\u2212", "-").replace("\u2013", "-").strip()
+    if not working:
+        return None
+
+    working = _strip_currency_tokens(working)
     if not working:
         return None
 
@@ -81,21 +115,10 @@ def _strip_sign_and_currency(raw_text: str) -> tuple[bool, str] | None:
     elif working.startswith("-"):
         is_negative = True
         working = working[1:].strip()
+    elif working.startswith("+"):
+        working = working[1:].strip()
 
-    if working.endswith(",-"):
-        working = working[:-2].strip()
-
-    upper_text = working.upper()
-    for token in _CURRENCY_TOKENS:
-        if upper_text.startswith(token):
-            working = working[len(token) :].strip()
-            break
-    upper_text = working.upper()
-    for token in _CURRENCY_TOKENS:
-        if upper_text.endswith(token):
-            working = working[: -len(token)].strip()
-            break
-
+    working = _strip_currency_tokens(working)
     return (is_negative, working) if working else None
 
 
@@ -104,11 +127,11 @@ def parse_decimal_amount(raw: str | int | float | Decimal | None) -> Decimal | N
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, Decimal):
-        return raw
+        return raw if raw.is_finite() else None
     if isinstance(raw, int):
         return Decimal(raw)
     if isinstance(raw, float):
-        return Decimal(str(raw))
+        return Decimal(str(raw)) if math.isfinite(raw) else None
 
     stripped = _strip_sign_and_currency(raw)
     if stripped is None:
@@ -141,7 +164,7 @@ def parse_discount_pct(raw: str | int | float | Decimal | None) -> Decimal | Non
         return Decimal("0")
     if isinstance(raw, str):
         cleaned = raw.strip().rstrip("%").strip()
-        if cleaned in ("", "-", "—", "–"):
+        if cleaned in ("", "-", "\u2014", "\u2013"):
             return Decimal("0")
         value = parse_decimal_amount(cleaned)
     else:
@@ -152,8 +175,10 @@ def parse_discount_pct(raw: str | int | float | Decimal | None) -> Decimal | Non
 
 
 def _normalize_indonesian_months(text: str) -> str:
-    tokens = text.split()
-    return " ".join(_INDONESIAN_TO_ENGLISH_MONTH.get(token.rstrip(".").lower(), token) for token in tokens)
+    return _ALPHA_TOKEN_PATTERN.sub(
+        lambda match: _INDONESIAN_TO_ENGLISH_MONTH.get(match.group(0).rstrip(".").lower(), match.group(0)),
+        text,
+    )
 
 
 def parse_date_flexible(raw: str | date | datetime | None, prefer_month_first: bool = False) -> date | None:
@@ -168,6 +193,11 @@ def parse_date_flexible(raw: str | date | datetime | None, prefer_month_first: b
     cleaned_text = " ".join(raw.strip().split())
     if not cleaned_text:
         return None
+    if len(cleaned_text) > 10 and cleaned_text[10] in ("T", " "):
+        try:
+            return date.fromisoformat(cleaned_text[:10])
+        except ValueError:
+            pass
     candidate = _normalize_indonesian_months(cleaned_text)
     numeric_formats = _MONTH_FIRST_NUMERIC_FORMATS if prefer_month_first else _DAY_FIRST_NUMERIC_FORMATS
 
@@ -280,7 +310,11 @@ def parse_assembled_document(assembled: AssembledDocument) -> ParsedDocument:
         doc_number_raw=assembled.doc_number_raw.strip() if assembled.doc_number_raw else None,
         doc_number_norm=normalize_key(assembled.doc_number_raw),
         doc_date=_parse_optional_document_date("doc_date", assembled.doc_date_raw, checks),
-        due_date=_parse_optional_document_date("due_date", assembled.due_date_raw, checks),
+        due_date=(
+            parse_date_flexible(assembled.due_date_raw, prefer_month_first=False)
+            if assembled.due_date_raw and assembled.due_date_raw.strip()
+            else None
+        ),
         po_number_raw=assembled.po_number_raw.strip() if assembled.po_number_raw else None,
         po_number_norm=normalize_key(assembled.po_number_raw),
         reference_doc_raw=assembled.reference_doc_raw.strip() if assembled.reference_doc_raw else None,

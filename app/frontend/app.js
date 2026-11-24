@@ -93,8 +93,19 @@ function bindDropzone(inputId, zoneId, labelId, metaId, emptyTitle) {
     zone.classList.remove("dragover");
     const dropped = e.dataTransfer && e.dataTransfer.files;
     if (dropped && dropped.length > 0) {
+      const candidate = dropped[0];
+      const allowedExts = (input.accept || "")
+        .split(",")
+        .map((ext) => ext.trim().toLowerCase())
+        .filter(Boolean);
+      const lowerName = candidate.name.toLowerCase();
+      if (allowedExts.length && !allowedExts.some((ext) => lowerName.endsWith(ext))) {
+        showError("Invalid File Type", `Expected ${allowedExts.join(" or ")} file, got '${candidate.name}'.`, []);
+        return;
+      }
+      hideError();
       const transfer = new DataTransfer();
-      transfer.items.add(dropped[0]);
+      transfer.items.add(candidate);
       input.files = transfer.files;
       updateLabel();
     }
@@ -175,6 +186,22 @@ function renderTieOutAndBridge(report) {
     const fbTxt = u.fallback_calls > 0 && u.fallback_model ? ` | fallback ${u.fallback_calls}x (${u.fallback_model})` : "";
     document.getElementById("usage-line").textContent =
       `${u.model}${fbTxt} | ${(u.latency_ms / 1000).toFixed(1)}s | ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out${costTxt}`;
+  } else {
+    document.getElementById("usage-line").textContent = "";
+  }
+}
+
+function syncVisibleSelectionAndDetail(report) {
+  const visible = getVisibleDocuments(report);
+  if (!visible.some((d) => d.doc_number_norm === selectedNormKey)) {
+    selectedNormKey = visible[0] ? visible[0].doc_number_norm : null;
+  }
+  renderTable(report);
+  const doc = selectedNormKey ? report.documents.find((x) => x.doc_number_norm === selectedNormKey) : null;
+  if (doc) {
+    renderDetail(doc, doc.pdf_pages[0] || null);
+  } else {
+    document.getElementById("detail-panel").innerHTML = `<p class="muted">No documents match the current filter.</p>`;
   }
 }
 
@@ -197,14 +224,8 @@ function renderPills(report) {
   container.querySelectorAll(".pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       activeFilter = btn.dataset.filter;
-      const visible = getVisibleDocuments(currentReport);
-      if (!visible.some((d) => d.doc_number_norm === selectedNormKey)) {
-        selectedNormKey = visible[0] ? visible[0].doc_number_norm : null;
-      }
       renderPills(currentReport);
-      renderTable(currentReport);
-      const doc = currentReport.documents.find((x) => x.doc_number_norm === selectedNormKey);
-      if (doc) renderDetail(doc, doc.pdf_pages[0] || null);
+      syncVisibleSelectionAndDetail(currentReport);
     });
   });
 }
@@ -452,7 +473,7 @@ function bindEvents() {
 
   document.getElementById("search-input").addEventListener("input", (e) => {
     searchQuery = e.target.value;
-    if (currentReport) renderTable(currentReport);
+    if (currentReport) syncVisibleSelectionAndDetail(currentReport);
   });
 
   document.getElementById("download-btn").addEventListener("click", () => {
@@ -461,6 +482,7 @@ function bindEvents() {
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeLightbox();
+    if (!document.getElementById("lightbox").classList.contains("hidden")) return;
     if (!currentReport || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
     if (document.activeElement && document.activeElement.tagName === "INPUT") return;
     const visible = getVisibleDocuments(currentReport);

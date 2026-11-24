@@ -15,7 +15,9 @@ def _format_page_range(pages: list[int]) -> str:
         return "not in PDF"
     if len(pages) == 1:
         return f"PDF Page {pages[0]}"
-    return f"PDF Pages {pages[0]}-{pages[-1]}"
+    if pages == list(range(pages[0], pages[-1] + 1)):
+        return f"PDF Pages {pages[0]}-{pages[-1]}"
+    return f"PDF Pages {', '.join(str(page) for page in pages)}"
 
 
 def _explain_matched(
@@ -32,11 +34,18 @@ def _explain_matched(
         notes.append("credit note printed as positive in PDF and booked as negative in ERP")
     if len(pdf_pages) > 1:
         notes.append(f"multi-page invoice across {page_text}")
+    if "ERP_STATUS_PARKED" in reason_codes:
+        notes.append("ERP entry is currently Parked")
     suffix = f" ({', '.join(notes)})" if notes else ""
+    action = (
+        "Post the parked ERP entry before releasing scheduled payment."
+        if "ERP_STATUS_PARKED" in reason_codes
+        else "No action required. Cleared for scheduled payment run."
+    )
     return (
         f"All line items, tax base (11/12 DPP), PPN, and total ({_format_idr(pdf_total_signed)}) match exactly "
         f"between {page_text} and {erp_text}{suffix}.",
-        "No action required. Cleared for scheduled payment run.",
+        action,
     )
 
 
@@ -56,6 +65,15 @@ def _explain_needs_review(
     causes: list[str] = []
     if "CURRENCY_MISMATCH" in reason_set:
         causes.append("document currency differs between supplier PDF and ERP export")
+    if "DOC_TYPE_MISMATCH" in reason_set:
+        causes.append("document type disagrees between supplier PDF and ERP export (invoice vs credit note)")
+    if "ERP_STATUS_CANCELLED" in reason_set:
+        causes.append("matching ERP entry has a cancelled or reversed status")
+    if "ERP_INTERNAL_MATH_ERROR" in reason_set:
+        causes.append(
+            f"ERP booked figures do not add up internally under R1-R4 "
+            f"(PDF {_format_idr(pdf_total_signed)} vs ERP {_format_idr(erp_total_signed)})"
+        )
     if "PO_NUMBER_MISMATCH" in reason_set:
         causes.append(
             f"PO number disagrees (PDF '{pdf_po_or_ref}' vs ERP '{erp_po_or_ref}') while amounts match"
@@ -94,7 +112,11 @@ def _explain_needs_review(
         action = f"Verify invoice currency on {page_text} before booking or converting amounts manually."
     elif "TAX_BASE_WRONG_DPP_NOT_11_12" in reason_set or "PDF_PPN_RULE_ERROR" in reason_set:
         action = "Hold payment and request a revised tax invoice (Faktur Pajak) using the 11/12 DPP Nilai Lain base."
-    elif "PDF_INTERNAL_SUBTOTAL_ERROR" in reason_set or "PDF_INTERNAL_LINE_ERROR" in reason_set:
+    elif "ERP_STATUS_CANCELLED" in reason_set:
+        action = "Do not pay. Confirm whether the invoice was cancelled or re-issued before booking a replacement."
+    elif "ERP_INTERNAL_MATH_ERROR" in reason_set:
+        action = f"Hold payment and correct the inconsistent ERP entry ({erp_text}) so line items, tax, and total tie out."
+    elif "PDF_INTERNAL_SUBTOTAL_ERROR" in reason_set or "PDF_INTERNAL_LINE_ERROR" in reason_set or "PDF_INTERNAL_TOTAL_ERROR" in reason_set:
         action = "Hold payment and request a corrected invoice from the supplier (do not pay the overstated PDF total)."
     elif "PO_NUMBER_MISMATCH" in reason_set:
         action = (
@@ -165,9 +187,14 @@ def _explain_missing_or_duplicate(
             f"Hold payment immediately and reverse the duplicate ERP entry to prevent a {_format_idr(abs(difference_signed))} overpayment.",
         )
     if status == DocStatus.DUPLICATE_IN_PDF:
+        erp_clause = (
+            f"compared to ERP {erp_text} ({_format_idr(erp_total_signed)})"
+            if erp_refs
+            else "and has no matching entry in the ERP export"
+        )
         return (
             f"{doc_label} appears multiple times across {page_text} (combined PDF {_format_idr(pdf_total_signed)}) "
-            f"compared to ERP {erp_text} ({_format_idr(erp_total_signed)}).",
+            f"{erp_clause}.",
             "Confirm with the supplier whether the repeated invoice in the PDF batch is a duplicate copy and pay once only.",
         )
     if status == DocStatus.MISSING_IN_ERP:

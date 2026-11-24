@@ -147,3 +147,31 @@ def test_assemble_keeps_blank_page_after_closed_invoice_separate() -> None:
     assert docs[0].pages == [1]
     assert docs[1].pages == [2]
     assert docs[1].doc_number_raw is None
+
+
+def test_assemble_backfills_missing_header_fields_from_continuation_and_isolates_leading_blank() -> None:
+    p1_blank = ExtractedPage(page_number=1, printed=PrintedPage())
+    p2_open = ExtractedPage(
+        page_number=2,
+        printed=PrintedPage(
+            doc_number_raw="INV/2026/10/0300",
+            po_number_raw=None,
+            lines=[_line("SKU-1", "100.000")],
+        ),
+    )
+    p3_cont = ExtractedPage(
+        page_number=3,
+        printed=PrintedPage(
+            is_continuation=True,
+            po_number_raw="PO-88300",
+            subtotal_raw="200.000",
+            ppn_raw="22.000",
+            grand_total_raw="222.000",
+            lines=[_line("SKU-2", "100.000")],
+        ),
+    )
+    docs = assemble_documents([p1_blank, p2_open, p3_cont])
+    assert len(docs) == 2
+    assert docs[0].pages == [1]
+    assert docs[1].pages == [2, 3]
+    assert docs[1].po_number_raw == "PO-88300"

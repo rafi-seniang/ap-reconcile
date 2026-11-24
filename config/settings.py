@@ -28,10 +28,12 @@ def read_local_secrets_file(secrets_path: Path) -> dict[str, str]:
 def infer_provider_name(model_name: str, api_base: str | None = None) -> str:
     """Derive a clean provider label from a LiteLLM model string and optional base URL."""
     lowered_model = model_name.lower()
-    if "deepseek" in lowered_model or (api_base and "deepseek" in api_base.lower()):
+    if api_base and "deepseek" in api_base.lower():
         return "deepseek"
     if "/" in model_name:
         return model_name.split("/", 1)[0].lower()
+    if "deepseek" in lowered_model:
+        return "deepseek"
     if lowered_model.startswith("gemini"):
         return "gemini"
     return "openai"
@@ -149,9 +151,9 @@ class Settings(BaseSettings):
                 "gemini": ("GEMINI_API_KEY",),
                 "deepseek": ("DEEPSEEK_API_KEY",),
                 "anthropic": ("ANTHROPIC_API_KEY",),
-                "openai": ("OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
+                "openai": ("OPENAI_API_KEY",),
             }
-            for env_name in env_names_by_provider.get(provider, ("OPENAI_API_KEY", "GEMINI_API_KEY")):
+            for env_name in env_names_by_provider.get(provider, ()):
                 if env_name in secret_map:
                     return secret_map[env_name]
         return None
@@ -186,8 +188,12 @@ class Settings(BaseSettings):
         """Return the fallback model API key when llm_fallback_model is set, or None if unavailable."""
         if not self.llm_fallback_model or not self.llm_fallback_model.strip():
             return None
+        same_provider = infer_provider_name(
+            self.llm_fallback_model, self.llm_fallback_base_url
+        ) == infer_provider_name(self.llm_model, self.llm_base_url)
+        inherited_override = self.llm_fallback_api_key or (self.llm_api_key if same_provider else None)
         return self.resolve_api_key_for_model(
             self.llm_fallback_model,
             self.llm_fallback_base_url,
-            explicit_override=self.llm_fallback_api_key or self.llm_api_key,
+            explicit_override=inherited_override,
         )

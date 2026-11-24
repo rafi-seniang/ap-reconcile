@@ -237,3 +237,24 @@ def test_load_erp_workbook_accepts_float_line_numbers_and_excel_percentage_forma
     first_line = loaded.documents[0].lines[0]
     assert first_line.line_number == 1
     assert first_line.discount_pct == Decimal("5")
+
+
+def test_load_erp_workbook_normalizes_positive_credit_note_lines_and_float_drift(tmp_path: Path) -> None:
+    path = _write_sample_erp(tmp_path / "erp_cn_pos.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws_lines = wb["AP_Lines"]
+    # Simulate formula float drift on a percentage cell (0.025000000000000022) and positive CN line values.
+    disc_cell = ws_lines.cell(2, 8, 0.025000000000000022)
+    disc_cell.number_format = "0.0%"
+    ws_lines.cell(4, 5, 1)
+    ws_lines.cell(4, 9, 876000)
+    wb.save(path)
+
+    loaded = load_erp_workbook(path)
+    assert loaded.documents[0].lines[0].discount_pct == Decimal("2.5")
+    cn_doc = loaded.documents[2]
+    assert cn_doc.lines[0].quantity_signed == Decimal("-1")
+    assert cn_doc.lines[0].line_amount_signed == Decimal("-876000")
+
+    with pytest.raises(ValueError, match="Invalid or corrupted ERP Excel"):
+        load_erp_workbook(b"not-a-valid-zip-xlsx")
