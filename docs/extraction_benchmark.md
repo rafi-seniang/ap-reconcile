@@ -64,7 +64,7 @@ Tested fairly with `TableFormerMode.ACCURATE` and `RapidOcrOptions`, `Docling` r
 | Latency (concurrency=3) | **22.7 s** | 33.7 s |
 | Actual Spend | USD 0 (free tier, list eq. USD 0.045) | **USD 0.01** (API balance USD 1.78 to USD 1.77) |
 
-Native PDF input on `gemini-3.5-flash-lite` uses ~57% fewer input tokens and completes in 22.7 s, while `deepseek-flash` provides predictable pay-as-you-go throughput at USD 0.01 per 16-page batch without free-tier daily caps. `gemini-3.8-flash` was also tested live and returned upstream HTTP 503/504 capacity errors on the free tier, validating the provider-agnostic switch and `UpstreamUnavailable` fail-fast behavior.
+Single-page PDF input on `gemini-3.5-flash-lite` uses ~57% fewer input tokens during direct SDK benchmarks, while `deepseek-flash` on 200 DPI PNG provides predictable pay-as-you-go throughput at USD 0.01 per 16-page batch without free-tier daily caps. In the final application (`app/llm/client.py`), all providers share one 200 DPI PNG input path through LiteLLM so `FallbackPageExtractor` can fail over immediately from `gemini/gemini-3.5-flash-lite` to `deepseek/deepseek-flash` when upstream 503 spikes occur without branching code. `gemini-3.8-flash` was also tested live and returned upstream HTTP 503/504 capacity errors on the free tier, validating the provider-agnostic switch and `UpstreamUnavailable` fail-fast behavior.
 
 ---
 

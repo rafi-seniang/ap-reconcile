@@ -124,9 +124,10 @@ def _parse_erp_amount_cell(value: Any) -> Decimal | None:
     return parse_decimal_amount(text)
 
 
-def _parse_erp_discount_cell(value: Any) -> Decimal | None:
+def _parse_erp_discount_cell(value: Any, number_format: str | None = None) -> Decimal | None:
     if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        return parse_discount_pct(value)
+        scaled = Decimal(str(value)) * Decimal("100") if number_format and "%" in number_format else value
+        return parse_discount_pct(scaled)
     return parse_discount_pct(_cell_to_clean_str(value))
 
 
@@ -154,6 +155,8 @@ def _parse_line_number_cell(
 ) -> int | None:
     if isinstance(raw_value, int) and not isinstance(raw_value, bool):
         return raw_value
+    if isinstance(raw_value, float) and raw_value.is_integer():
+        return int(raw_value)
     if raw_value is not None and str(raw_value).strip().isdigit():
         return int(str(raw_value).strip())
     _record_validation_issue(issues, sheet, row_index, "Line", "line number must be an integer", raw_value)
@@ -214,11 +217,16 @@ def _parse_erp_line_row(
         "cannot parse unit price as IDR amount",
         issues,
     )
-    discount_raw = worksheet.cell(row_index, header_map["disc %"]).value
-    discount_pct = _parse_erp_discount_cell(discount_raw)
+    discount_cell = worksheet.cell(row_index, header_map["disc %"])
+    discount_pct = _parse_erp_discount_cell(discount_cell.value, discount_cell.number_format)
     if discount_pct is None:
         _record_validation_issue(
-            issues, worksheet.title, row_index, "Disc %", "cannot parse discount (expected 0 to 100)", discount_raw
+            issues,
+            worksheet.title,
+            row_index,
+            "Disc %",
+            "cannot parse discount (expected 0 to 100)",
+            discount_cell.value,
         )
     line_amount = _require_amount_cell(
         worksheet.cell(row_index, header_map["line amount"]).value,
