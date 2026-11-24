@@ -266,3 +266,30 @@ def test_api_enforces_per_ip_rate_limit_and_upload_size_guard(tmp_path: Path) ->
         )
         assert blocked.status_code == 429
         assert stub.calls == 1
+
+
+def test_api_returns_422_on_corrupted_xlsx_or_pdf_bytes(tmp_path: Path) -> None:
+    stub = _StubExtractor()
+    service = build_reconciliation_service(Settings(), primary_extractor=stub, retry_extractor=None)
+    app = create_web_application(reconciliation_service=service)
+
+    with TestClient(app) as client:
+        bad_xlsx = client.post(
+            "/api/reconcile",
+            files={
+                "pdf_file": ("sep.pdf", _make_pdf_bytes(tmp_path), "application/pdf"),
+                "erp_file": ("corrupt.xlsx", b"not-a-zip", "application/octet-stream"),
+            },
+        )
+        assert bad_xlsx.status_code == 422
+        assert stub.calls == 0
+
+        bad_pdf = client.post(
+            "/api/reconcile",
+            files={
+                "pdf_file": ("corrupt.pdf", b"not-a-pdf", "application/pdf"),
+                "erp_file": ("valid.xlsx", _make_erp_bytes(tmp_path), "application/octet-stream"),
+            },
+        )
+        assert bad_pdf.status_code == 422
+        assert stub.calls == 0

@@ -5,7 +5,9 @@ from app.schemas.invoice import AssembledDocument, AssembledLine, ExtractedPage
 
 
 def _is_continuation_of_open_document(page: ExtractedPage, current_document: AssembledDocument) -> bool:
-    """Join only when the previous page left the invoice open without closing on a grand total."""
+    """Join only when the previous page left a non-empty invoice open without closing on a grand total."""
+    if not current_document.doc_number_raw and not current_document.lines:
+        return False
     current_is_closed = bool(current_document.grand_total_raw and current_document.grand_total_raw.strip())
     if current_is_closed:
         return False
@@ -30,14 +32,20 @@ def assemble_documents(pages: list[ExtractedPage]) -> list[AssembledDocument]:
             current_document = documents[-1]
             current_document.pages.append(page.page_number)
             current_document.lines.extend(page_lines)
-            if current_document.subtotal_raw is None and printed.subtotal_raw is not None:
-                current_document.subtotal_raw = printed.subtotal_raw
-            if current_document.dpp_raw is None and printed.dpp_raw is not None:
-                current_document.dpp_raw = printed.dpp_raw
-            if current_document.ppn_raw is None and printed.ppn_raw is not None:
-                current_document.ppn_raw = printed.ppn_raw
-            if current_document.grand_total_raw is None and printed.grand_total_raw is not None:
-                current_document.grand_total_raw = printed.grand_total_raw
+            for field_name in (
+                "supplier_name",
+                "doc_date_raw",
+                "due_date_raw",
+                "po_number_raw",
+                "reference_doc_raw",
+                "currency",
+                "subtotal_raw",
+                "dpp_raw",
+                "ppn_raw",
+                "grand_total_raw",
+            ):
+                if getattr(current_document, field_name) is None and getattr(printed, field_name) is not None:
+                    setattr(current_document, field_name, getattr(printed, field_name))
             continue
 
         documents.append(

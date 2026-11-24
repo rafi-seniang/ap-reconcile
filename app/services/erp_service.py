@@ -1,12 +1,15 @@
 """ERP workbook loading and fail-fast schema validation service."""
 
+import math
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 import openpyxl
+from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.llm.parser import (
@@ -116,8 +119,14 @@ def _parse_erp_date_cell(value: Any) -> date | None:
 
 
 def _parse_erp_amount_cell(value: Any) -> Decimal | None:
-    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        return Decimal(str(value))
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(str(value)) if math.isfinite(value) else None
     text = _cell_to_clean_str(value)
     if _is_excel_formula_error(text):
         return None
@@ -126,7 +135,15 @@ def _parse_erp_amount_cell(value: Any) -> Decimal | None:
 
 def _parse_erp_discount_cell(value: Any, number_format: str | None = None) -> Decimal | None:
     if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        scaled = Decimal(str(value)) * Decimal("100") if number_format and "%" in number_format else value
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        if isinstance(value, Decimal) and not value.is_finite():
+            return None
+        scaled = (
+            round(Decimal(str(value)) * Decimal("100"), 6)
+            if number_format and "%" in number_format
+            else value
+        )
         return parse_discount_pct(scaled)
     return parse_discount_pct(_cell_to_clean_str(value))
 
@@ -412,6 +429,21 @@ def _parse_erp_header_row(
     doc_number_norm = normalize_key(doc_number_raw)
     assert doc_number_norm is not None
 
+    raw_lines = lines_by_entry_id.get(entry_id, [])
+    normalized_lines = (
+        [
+            line.model_copy(
+                update={
+                    "quantity_signed": -line.quantity_abs,
+                    "line_amount_signed": -line.line_amount_abs,
+                }
+            )
+            for line in raw_lines
+        ]
+        if is_credit_note
+        else raw_lines
+    )
+
     # Normalize ERP credit note sign to negative even if an export stores positive numbers.
     return ErpDocument(
         entry_id=entry_id,
@@ -433,7 +465,7 @@ def _parse_erp_header_row(
         grand_total_signed=-abs(grand_total) if is_credit_note else grand_total,
         doc_status=doc_status,
         posted_by=posted_by,
-        lines=lines_by_entry_id.get(entry_id, []),
+        lines=normalized_lines,
     )
 
 
@@ -474,76 +506,85 @@ def _open_erp_workbook(source: Path | str | bytes) -> openpyxl.Workbook:
     if isinstance(source, bytes):
         if not source:
             raise ValueError("ERP workbook byte payload is empty")
-        return openpyxl.load_workbook(BytesIO(source), data_only=True)
+        try:
+            return openpyxl.load_workbook(BytesIO(source), data_only=True)
+        except (BadZipFile, InvalidFileException, KeyError, EOFError, OSError) as exc:
+            raise ValueError(f"Invalid or corrupted ERP Excel (.xlsx) workbook: {exc}") from exc
     workbook_path = Path(source)
     if not workbook_path.is_file():
         raise FileNotFoundError(f"ERP workbook not found: {workbook_path}")
-    return openpyxl.load_workbook(workbook_path, data_only=True)
+    try:
+        return openpyxl.load_workbook(workbook_path, data_only=True)
+    except (BadZipFile, InvalidFileException, KeyError, EOFError, OSError) as exc:
+        raise ValueError(f"Invalid or corrupted ERP Excel (.xlsx) workbook: {exc}") from exc
 
 
 def load_erp_workbook(source: Path | str | bytes) -> ErpWorkbook:
     """Load and strictly validate all sheets of an ERP AP Excel export before spending LLM tokens."""
     workbook = _open_erp_workbook(source)
-    issues: list[ErpValidationIssue] = []
+    try:
+        issues: list[ErpValidationIssue] = []
 
-    for required_sheet in ("AP_Invoices", "AP_Lines"):
-        if required_sheet not in workbook.sheetnames:
-            issues.append(
-                ErpValidationIssue(
-                    sheet=required_sheet,
-                    message=f"required sheet '{required_sheet}' not found (sheets present: {workbook.sheetnames})",
+        for required_sheet in ("AP_Invoices", "AP_Lines"):
+            if required_sheet not in workbook.sheetnames:
+                issues.append(
+                    ErpValidationIssue(
+                        sheet=required_sheet,
+                        message=f"required sheet '{required_sheet}' not found (sheets present: {workbook.sheetnames})",
+                    )
+                )
+        if issues:
+            raise ErpValidationError(issues)
+
+        invoice_sheet = workbook["AP_Invoices"]
+        lines_sheet = workbook["AP_Lines"]
+        invoice_header_map = _map_required_headers(invoice_sheet, _INVOICE_REQUIRED_COLUMNS, issues)
+        lines_header_map = _map_required_headers(lines_sheet, _LINE_REQUIRED_COLUMNS, issues)
+
+        credit_note_header_map: dict[str, int] = {}
+        has_credit_note_sheet = "AP_CreditNotes" in workbook.sheetnames
+        if has_credit_note_sheet:
+            credit_note_header_map = _map_required_headers(
+                workbook["AP_CreditNotes"], _CREDIT_NOTE_REQUIRED_COLUMNS, issues
+            )
+        if issues:
+            raise ErpValidationError(issues)
+
+        lines_by_entry_id = _load_all_erp_lines(lines_sheet, lines_header_map, issues)
+        seen_entry_ids: set[str] = set()
+        documents = _load_erp_header_sheet(
+            invoice_sheet, invoice_header_map, False, seen_entry_ids, lines_by_entry_id, issues
+        )
+        if has_credit_note_sheet:
+            documents.extend(
+                _load_erp_header_sheet(
+                    workbook["AP_CreditNotes"],
+                    credit_note_header_map,
+                    True,
+                    seen_entry_ids,
+                    lines_by_entry_id,
+                    issues,
                 )
             )
-    if issues:
-        raise ErpValidationError(issues)
 
-    invoice_sheet = workbook["AP_Invoices"]
-    lines_sheet = workbook["AP_Lines"]
-    invoice_header_map = _map_required_headers(invoice_sheet, _INVOICE_REQUIRED_COLUMNS, issues)
-    lines_header_map = _map_required_headers(lines_sheet, _LINE_REQUIRED_COLUMNS, issues)
+        known_entry_ids = {doc.entry_id for doc in documents}
+        for entry_id, orphan_lines in lines_by_entry_id.items():
+            if entry_id not in known_entry_ids:
+                _record_validation_issue(
+                    issues,
+                    "AP_Lines",
+                    orphan_lines[0].row,
+                    "Entry ID",
+                    "line Entry ID does not match any header in AP_Invoices or AP_CreditNotes",
+                    entry_id,
+                )
 
-    credit_note_header_map: dict[str, int] = {}
-    has_credit_note_sheet = "AP_CreditNotes" in workbook.sheetnames
-    if has_credit_note_sheet:
-        credit_note_header_map = _map_required_headers(
-            workbook["AP_CreditNotes"], _CREDIT_NOTE_REQUIRED_COLUMNS, issues
-        )
-    if issues:
-        raise ErpValidationError(issues)
+        if issues:
+            raise ErpValidationError(issues)
 
-    lines_by_entry_id = _load_all_erp_lines(lines_sheet, lines_header_map, issues)
-    seen_entry_ids: set[str] = set()
-    documents = _load_erp_header_sheet(
-        invoice_sheet, invoice_header_map, False, seen_entry_ids, lines_by_entry_id, issues
-    )
-    if has_credit_note_sheet:
-        documents.extend(
-            _load_erp_header_sheet(
-                workbook["AP_CreditNotes"],
-                credit_note_header_map,
-                True,
-                seen_entry_ids,
-                lines_by_entry_id,
-                issues,
-            )
-        )
-
-    known_entry_ids = {doc.entry_id for doc in documents}
-    for entry_id, orphan_lines in lines_by_entry_id.items():
-        if entry_id not in known_entry_ids:
-            _record_validation_issue(
-                issues,
-                "AP_Lines",
-                orphan_lines[0].row,
-                "Entry ID",
-                "line Entry ID does not match any header in AP_Invoices or AP_CreditNotes",
-                entry_id,
-            )
-
-    if issues:
-        raise ErpValidationError(issues)
-
-    return ErpWorkbook(documents=documents, export_info=_read_export_metadata_sheet(workbook))
+        return ErpWorkbook(documents=documents, export_info=_read_export_metadata_sheet(workbook))
+    finally:
+        workbook.close()
 
 
 class ErpService:

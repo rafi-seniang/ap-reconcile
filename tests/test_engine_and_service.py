@@ -618,3 +618,121 @@ def test_engine_flags_matching_wrong_ppn_rate_and_handles_pdf_absent_erp_duplica
     assert by_key["PKIINV2026100402"].status == DocStatus.DUPLICATE_IN_ERP
     assert "absent from the supplier PDF batch" in by_key["PKIINV2026100402"].plain_explanation
     assert report.control_totals.unexplained_variance == Decimal("0")
+
+
+async def test_retry_resilience_erp_r7_checks_and_safe_excel_export(tmp_path: Path) -> None:
+    # 1. Cross-provider LLM_API_KEY must not leak to a different fallback provider.
+    isolated_settings = Settings(
+        llm_model="gemini/gemini-3.5-flash-lite",
+        llm_fallback_model="deepseek/deepseek-flash",
+        llm_api_key="generic-gemini-only-key",
+        deepseek_api_key=None,
+        secrets_env_path=None,
+    )
+    assert isolated_settings.resolve_fallback_api_key() is None
+
+    # 2. Retry UpstreamUnavailable or empty-line retry must preserve primary extraction without crashing.
+    pdf_doc_fitz: Any = pymupdf
+    raw_pdf = pdf_doc_fitz.open()
+    raw_pdf.new_page().insert_text((72, 72), "PKI/INV/2026/10/0501")
+    pdf_bytes = bytes(raw_pdf.tobytes())
+    raw_pdf.close()
+
+    wb = openpyxl.Workbook()
+    ws_inv = wb.active
+    assert ws_inv is not None
+    ws_inv.title = "AP_Invoices"
+    ws_inv.append(
+        [
+            "Entry ID",
+            "Vendor",
+            "Vendor Inv. No",
+            "Doc Date",
+            "PO No",
+            "Curr",
+            "Subtotal",
+            "DPP",
+            "PPN",
+            "Grand Total",
+            "Doc Status",
+        ]
+    )
+    ws_inv.append(
+        ["E-501", "Vendor", "PKI/INV/2026/10/0501", "2026-10-10", "PO-501", "IDR", 1000000, 916667, 110000, 1110000, "Posted"]
+    )
+    ws_lines = wb.create_sheet("AP_Lines")
+    ws_lines.append(
+        ["Entry ID", "Line", "Item Code", "Item Description", "Qty", "UOM", "Unit Price", "Disc %", "Line Amount"]
+    )
+    ws_lines.append(["E-501", 1, "SKU-1", "Paper", 10, "rim", 100000, 0, 1000000])
+    from io import BytesIO
+
+    erp_buf = BytesIO()
+    wb.save(erp_buf)
+
+    supplier_math_err_page = PrintedPage(
+        doc_number_raw="=PKI/INV/2026/10/0501",
+        po_number_raw="PO-501",
+        subtotal_raw="1.100.000",
+        dpp_raw="1.008.333",
+        ppn_raw="121.000",
+        grand_total_raw="1.221.000",
+        lines=[
+            PrintedLine(
+                line_number_raw="1",
+                item_code="SKU-1",
+                description="Paper\x0cFormFeed",
+                quantity_raw="10",
+                uom_raw="rim",
+                unit_price_raw="100.000",
+                discount_pct_raw="0",
+                line_amount_raw="1.000.000",
+            )
+        ],
+    )
+    primary_ok = _FakeExtractor("gemini/gemini-3.5-flash-lite", supplier_math_err_page)
+    failing_retry = _Always503Extractor()
+    svc = build_reconciliation_service(Settings(), primary_extractor=primary_ok, retry_extractor=failing_retry)
+    res = await svc.reconcile(pdf_bytes, erp_buf.getvalue())
+    assert res.report.documents[0].status == DocStatus.NEEDS_REVIEW
+    assert failing_retry.calls == 1
+
+    # Degraded 0-line retry must never overwrite a multi-line primary extraction.
+    empty_retry = _FakeExtractor("gemini/gemini-3.5-flash-lite", PrintedPage(doc_number_raw="=PKI/INV/2026/10/0501", lines=[]))
+    svc_empty_retry = build_reconciliation_service(Settings(), primary_extractor=primary_ok, retry_extractor=empty_retry)
+    res_preserved = await svc_empty_retry.reconcile(pdf_bytes, erp_buf.getvalue())
+    assert res_preserved.report.documents[0].pdf_total_signed == Decimal("1221000")
+
+    # 3. ERP R7 internal math error, Parked matched action, Cancelled status, and non-contiguous pages.
+    parked_pdf = _pdf_doc("PKI/INV/2026/10/0502", page=2)
+    parked_erp = _erp_doc("E-502", "PKI/INV/2026/10/0502", status="Parked")
+    cancelled_pdf = _pdf_doc("PKI/INV/2026/10/0503", page=3)
+    cancelled_erp = _erp_doc("E-503", "PKI/INV/2026/10/0503", status="Cancelled")
+    erp_typo_pdf = _pdf_doc("PKI/INV/2026/10/0504", page=4)
+    erp_typo_erp = _erp_doc("E-504", "PKI/INV/2026/10/0504", total=1_210_000)
+    dup_p2 = _pdf_doc("PKI/INV/2026/10/0505", page=2)
+    dup_p11 = _pdf_doc("PKI/INV/2026/10/0505", page=11)
+
+    batch_report = reconcile_batch(
+        [erp_typo_pdf, parked_pdf, cancelled_pdf, dup_p2, dup_p11],
+        ErpWorkbook(documents=[erp_typo_erp, parked_erp, cancelled_erp]),
+        pdf_filename="=oct.pdf",
+        erp_filename="oct.xlsx",
+    )
+    by_key = {doc.doc_number_norm: doc for doc in batch_report.documents}
+    assert by_key["PKIINV2026100502"].status == DocStatus.MATCHED
+    assert "ERP_STATUS_PARKED" in by_key["PKIINV2026100502"].reason_codes
+    assert "Post the parked ERP entry" in by_key["PKIINV2026100502"].suggested_action
+    assert by_key["PKIINV2026100503"].status == DocStatus.NEEDS_REVIEW
+    assert "ERP_STATUS_CANCELLED" in by_key["PKIINV2026100503"].reason_codes
+    assert by_key["PKIINV2026100504"].status == DocStatus.NEEDS_REVIEW
+    assert "ERP_INTERNAL_MATH_ERROR" in by_key["PKIINV2026100504"].reason_codes
+    assert "PDF Pages 2, 11" in by_key["PKIINV2026100505"].plain_explanation
+    assert batch_report.control_totals.unexplained_variance == Decimal("0")
+
+    # 4. Excel export strips illegal XML chars (\x0c) and locks '=' cells to literal string data_type='s'.
+    xlsx_path = write_excel_report(res.report, tmp_path / "safe.xlsx")
+    reloaded = openpyxl.load_workbook(xlsx_path)
+    formula_like_cell = reloaded["Reconciliation_Report"].cell(2, 1)
+    assert formula_like_cell.value == "=PKI/INV/2026/10/0501"
+    assert formula_like_cell.data_type == "s"

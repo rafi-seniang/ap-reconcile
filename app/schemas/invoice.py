@@ -2,9 +2,9 @@
 
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DocumentType = Literal["invoice", "credit_note"]
 
@@ -22,21 +22,30 @@ class CheckResult(BaseModel):
 class PrintedLine(BaseModel):
     """One line item copied verbatim from a supplier invoice or credit note page."""
 
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+
     line_number_raw: str | None = Field(None, description=f"Row index number {AS_PRINTED}")
     item_code: str | None = Field(None, description=f"SKU or item code {AS_PRINTED}")
-    description: str = Field(..., description="Item description copied verbatim")
-    quantity_raw: str = Field(..., description=f"Quantity {AS_PRINTED}")
+    description: str = Field("", description="Item description copied verbatim")
+    quantity_raw: str | None = Field(None, description=f"Quantity {AS_PRINTED}")
     uom_raw: str | None = Field(None, description=f"Unit of measure (e.g. rim, box, pcs) {AS_PRINTED}")
-    unit_price_raw: str = Field(..., description=f"Unit price before discount {AS_PRINTED}")
+    unit_price_raw: str | None = Field(None, description=f"Unit price before discount {AS_PRINTED}")
     discount_pct_raw: str | None = Field(
         None,
         description="Discount percentage as printed (e.g. '10' or '2,5'); null when the column is blank",
     )
-    line_amount_raw: str = Field(..., description=f"Extended line total amount {AS_PRINTED}")
+    line_amount_raw: str | None = Field(None, description=f"Extended line total amount {AS_PRINTED}")
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _coerce_null_description(cls, value: Any) -> Any:
+        return "" if value is None else value
 
 
 class PrintedPage(BaseModel):
     """One PDF page copied verbatim by the multimodal model without arithmetic edits."""
+
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
 
     is_continuation: bool = Field(
         False,
@@ -69,6 +78,21 @@ class PrintedPage(BaseModel):
         default_factory=list,
         description="Every line item printed on this page, in printed order",
     )
+
+    @field_validator("is_continuation", mode="before")
+    @classmethod
+    def _coerce_null_continuation(cls, value: Any) -> Any:
+        return False if value is None else value
+
+    @field_validator("document_type", mode="before")
+    @classmethod
+    def _coerce_null_document_type(cls, value: Any) -> Any:
+        return "invoice" if value is None else value
+
+    @field_validator("lines", mode="before")
+    @classmethod
+    def _coerce_null_lines(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class ExtractedPage(BaseModel):

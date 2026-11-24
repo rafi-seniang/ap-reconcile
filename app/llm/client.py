@@ -5,6 +5,8 @@ import base64
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, get_args
@@ -12,6 +14,7 @@ from typing import Any, Protocol, get_args
 import litellm
 from litellm.exceptions import (
     APIConnectionError,
+    BadGatewayError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -33,9 +36,11 @@ logger = logging.getLogger(__name__)
 _TRANSIENT_LITELLM_ERRORS = (
     RateLimitError,
     ServiceUnavailableError,
+    BadGatewayError,
     InternalServerError,
     APIConnectionError,
     Timeout,
+    asyncio.TimeoutError,
 )
 
 
@@ -73,6 +78,33 @@ def extract_json_object_text(raw_text: str) -> str:
     """Strip markdown fences or surrounding prose to isolate the outer JSON object."""
     start_idx, end_idx = raw_text.find("{"), raw_text.rfind("}")
     return raw_text[start_idx : end_idx + 1] if start_idx != -1 and end_idx > start_idx else raw_text
+
+
+def _extract_choice_content(response: Any, page_number: int) -> str:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise UpstreamUnavailable(f"LLM returned no completion choices on page {page_number}")
+    first_choice = choices[0]
+    if getattr(first_choice, "finish_reason", None) == "length":
+        raise UpstreamUnavailable(f"LLM output truncated at max_tokens on page {page_number}")
+
+    raw_content = getattr(getattr(first_choice, "message", None), "content", None)
+    if isinstance(raw_content, list):
+        text_parts = [str(part.get("text", "")) for part in raw_content if isinstance(part, dict)]
+        content_text = "".join(text_parts)
+    else:
+        content_text = str(raw_content or "")
+
+    if not content_text.strip():
+        raise UpstreamUnavailable(f"LLM returned empty message content on page {page_number}")
+    return content_text
+
+
+def _validate_printed_page_json(raw_text: str, *, allow_empty_object: bool) -> PrintedPage:
+    json_text = extract_json_object_text(raw_text)
+    if not allow_empty_object and json_text.strip() == "{}":
+        raise ValueError("Returned empty JSON object '{}' without PrintedPage fields")
+    return PrintedPage.model_validate_json(json_text)
 
 
 def build_schema_outline(schema_class: type[BaseModel]) -> dict[str, Any]:
@@ -158,7 +190,7 @@ class LiteLLMPageExtractor:
                     input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
                     output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
                 )
-                content = str(response.choices[0].message.content or "{}")
+                content = _extract_choice_content(response, page_number)
                 return content, tokens
             except _TRANSIENT_LITELLM_ERRORS as exc:
                 last_error = exc
@@ -213,12 +245,13 @@ class LiteLLMPageExtractor:
 
         first_text, first_tokens = await self._complete_with_backoff(messages, page_number=page.page_number)
         try:
-            return PrintedPage.model_validate_json(extract_json_object_text(first_text)), first_tokens
-        except ValidationError as exc:
+            return _validate_printed_page_json(first_text, allow_empty_object=False), first_tokens
+        except (ValidationError, ValueError) as exc:
+            first_issue = exc.errors()[0] if isinstance(exc, ValidationError) else str(exc)
             logger.warning(
                 "Model output failed schema validation on page %s, requesting one JSON repair: %s",
                 page.page_number,
-                exc.errors()[0],
+                first_issue,
             )
             messages.extend(
                 [
@@ -238,8 +271,8 @@ class LiteLLMPageExtractor:
             output_tokens=first_tokens.output_tokens + repair_tokens.output_tokens,
         )
         try:
-            return PrintedPage.model_validate_json(extract_json_object_text(repaired_text)), combined_tokens
-        except ValidationError as exc:
+            return _validate_printed_page_json(repaired_text, allow_empty_object=True), combined_tokens
+        except (ValidationError, ValueError) as exc:
             raise UpstreamUnavailable(
                 f"Model {self.model_name} did not return valid JSON for page {page.page_number}"
             ) from exc
@@ -316,8 +349,11 @@ class DiskCachedExtractor:
     ) -> tuple[PrintedPage, TokenCount]:
         cache_path = self._build_cache_path(page, retry_feedback)
         if cache_path.is_file():
-            cached_payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            return PrintedPage.model_validate(cached_payload["printed"]), TokenCount(0, 0, from_cache=True)
+            try:
+                cached_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                return PrintedPage.model_validate(cached_payload["printed"]), TokenCount(0, 0, from_cache=True)
+            except (OSError, json.JSONDecodeError, KeyError, ValidationError) as exc:
+                logger.warning("Ignoring unreadable cache entry %s: %s", cache_path.name, exc)
 
         printed, tokens = await self._inner.extract_page(page, total_pages, retry_feedback=retry_feedback)
         record = {
@@ -328,7 +364,13 @@ class DiskCachedExtractor:
             "recorded_output_tokens": tokens.output_tokens,
             "printed": printed.model_dump(mode="json"),
         }
-        cache_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+        serialized = json.dumps(record, indent=2, ensure_ascii=False)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self._cache_dir, suffix=".tmp", delete=False
+        ) as temp_file:
+            temp_file.write(serialized)
+            temp_path = Path(temp_file.name)
+        os.replace(temp_path, cache_path)
         return printed, tokens
 
     async def close(self) -> None:

@@ -19,7 +19,7 @@ from app.schemas.invoice import AssembledDocument, AssembledLine, PrintedLine
 @pytest.mark.parametrize(
     ("qty", "price", "disc", "expected"),
     [
-        # Exact .5 cases from September 2026 batch where banker's rounding (ROUND_HALF_EVEN) would diverge.
+        # Exact .5 cases from September 2026 batch (even integer halves diverge under ROUND_HALF_EVEN).
         (
             Decimal("65"),
             Decimal("4750"),

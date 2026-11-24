@@ -1,8 +1,10 @@
 """Formatted 4-sheet Excel and JSON reconciliation report export service."""
 
+import re
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -10,6 +12,8 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.schemas.reconciliation import DocStatus, ReconciliationReport
+
+_ILLEGAL_XML_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 _HEADER_FILL = PatternFill("solid", fgColor="1B4965")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=10)
@@ -27,6 +31,21 @@ _STATUS_CELL_FILLS: dict[str, PatternFill] = {
     DocStatus.DUPLICATE_IN_PDF.value: PatternFill("solid", fgColor="F8D7DA"),
     DocStatus.NEEDS_REVIEW.value: PatternFill("solid", fgColor="FDE2E4"),
 }
+
+
+def _clean_excel_text(value: str) -> str:
+    return _ILLEGAL_XML_CHARS_PATTERN.sub("", value)
+
+
+def _append_safe_row(worksheet: Worksheet, values: list[Any]) -> int:
+    """Append one row while stripping illegal XML control chars and preventing '=' formula evaluation."""
+    cleaned_values = [_clean_excel_text(item) if isinstance(item, str) else item for item in values]
+    worksheet.append(cleaned_values)
+    row_index = worksheet.max_row
+    for col_index, raw_item in enumerate(cleaned_values, start=1):
+        if isinstance(raw_item, str) and raw_item.startswith("="):
+            worksheet.cell(row_index, col_index).data_type = "s"
+    return row_index
 
 
 def _decimal_to_excel_number(value: Decimal | None) -> int | float | None:
@@ -118,7 +137,10 @@ def _write_control_totals_block(
     row_cursor = start_row
     for label, value, number_format in summary_rows:
         label_cell = worksheet.cell(row_cursor, 1, label)
-        value_cell = worksheet.cell(row_cursor, 2, value)
+        safe_value = _clean_excel_text(value) if isinstance(value, str) else value
+        value_cell = worksheet.cell(row_cursor, 2, safe_value)
+        if isinstance(safe_value, str) and safe_value.startswith("="):
+            value_cell.data_type = "s"
         if label.startswith("BATCH CONTROL") or label in bold_labels:
             label_cell.font = _SECTION_FONT if label.startswith("BATCH") else _BOLD_FONT
             value_cell.font = _BOLD_FONT
@@ -167,6 +189,7 @@ def _write_usage_block(worksheet: Worksheet, report: ReconciliationReport, start
     usage_rows = [
         ("Provider / Primary Model", f"{usage.provider} / {usage.model}"),
         ("Retry Model", usage.retry_model or "none"),
+        ("Fallback Model / Calls", f"{usage.fallback_model or 'none'} ({usage.fallback_calls} calls)"),
         (
             "Primary Calls / Retry Calls / Cached Pages",
             f"{usage.primary_calls} / {usage.retry_calls} / {usage.cached_pages}",
@@ -211,7 +234,8 @@ def _build_reconciliation_report_sheet(worksheet: Worksheet, report: Reconciliat
     _style_header_row(worksheet, headers)
 
     for doc in report.documents:
-        worksheet.append(
+        row_idx = _append_safe_row(
+            worksheet,
             [
                 doc.pdf_doc_number_raw or "",
                 doc.erp_doc_number_raw or "",
@@ -228,9 +252,8 @@ def _build_reconciliation_report_sheet(worksheet: Worksheet, report: Reconciliat
                 ", ".join(doc.reason_codes),
                 doc.plain_explanation,
                 doc.suggested_action,
-            ]
+            ],
         )
-        row_idx = worksheet.max_row
         for col_idx in (9, 10, 11):
             worksheet.cell(row_idx, col_idx).number_format = _IDR_NUMBER_FORMAT
         if doc.status.value in _STATUS_CELL_FILLS:
@@ -265,7 +288,8 @@ def _build_line_discrepancies_sheet(worksheet: Worksheet, report: Reconciliation
     _style_header_row(worksheet, headers)
 
     for item in report.line_discrepancies:
-        worksheet.append(
+        row_idx = _append_safe_row(
+            worksheet,
             [
                 item.doc_number_raw,
                 item.discrepancy_type,
@@ -285,9 +309,8 @@ def _build_line_discrepancies_sheet(worksheet: Worksheet, report: Reconciliation
                 _decimal_to_excel_number(item.erp_line_amount),
                 _decimal_to_excel_number(item.amount_difference),
                 item.detail,
-            ]
+            ],
         )
-        row_idx = worksheet.max_row
         for col_idx in (8, 10, 14, 16, 17):
             worksheet.cell(row_idx, col_idx).number_format = _IDR_NUMBER_FORMAT
         worksheet.cell(row_idx, 18).alignment = Alignment(wrap_text=True, vertical="top")
@@ -309,7 +332,8 @@ def _build_audit_trail_sheet(worksheet: Worksheet, report: ReconciliationReport)
     _style_header_row(worksheet, headers)
 
     for ref in report.audit_trail:
-        worksheet.append(
+        row_idx = _append_safe_row(
+            worksheet,
             [
                 ref.doc_number_norm,
                 ref.doc_number_raw,
@@ -319,9 +343,9 @@ def _build_audit_trail_sheet(worksheet: Worksheet, report: ReconciliationReport)
                 ref.field_or_item,
                 ref.raw_value,
                 _decimal_to_excel_number(ref.numeric_value),
-            ]
+            ],
         )
-        worksheet.cell(worksheet.max_row, 8).number_format = _IDR_NUMBER_FORMAT
+        worksheet.cell(row_idx, 8).number_format = _IDR_NUMBER_FORMAT
 
     _autofit_worksheet_columns(worksheet, max_width=50)
 
