@@ -69,6 +69,8 @@ def _explain_needs_review(
             f"supplier calculated 12% PPN on 100% of subtotal instead of the 11/12 DPP Nilai Lain base (R3/R4), "
             f"creating a {_format_idr(difference_signed)} tax difference (PDF {_format_idr(pdf_total_signed)} vs ERP {_format_idr(erp_total_signed)})"
         )
+    if "PDF_PPN_RULE_ERROR" in reason_set:
+        causes.append("printed PPN deviates from the R3/R4 12% on 11/12 DPP formula beyond rounding tolerance")
     if reason_set & {"PDF_INTERNAL_SUBTOTAL_ERROR", "PDF_INTERNAL_LINE_ERROR", "PDF_INTERNAL_TOTAL_ERROR"}:
         check_text = (
             ", ".join(failed_check_details) if failed_check_details else "internal figures do not add up"
@@ -90,7 +92,7 @@ def _explain_needs_review(
     action = "Do not pay yet. Hold for AP supervisor review."
     if "CURRENCY_MISMATCH" in reason_set:
         action = f"Verify invoice currency on {page_text} before booking or converting amounts manually."
-    elif "TAX_BASE_WRONG_DPP_NOT_11_12" in reason_set:
+    elif "TAX_BASE_WRONG_DPP_NOT_11_12" in reason_set or "PDF_PPN_RULE_ERROR" in reason_set:
         action = "Hold payment and request a revised tax invoice (Faktur Pajak) using the 11/12 DPP Nilai Lain base."
     elif "PDF_INTERNAL_SUBTOTAL_ERROR" in reason_set or "PDF_INTERNAL_LINE_ERROR" in reason_set:
         action = "Hold payment and request a corrected invoice from the supplier (do not pay the overstated PDF total)."
@@ -141,6 +143,7 @@ def _explain_missing_or_duplicate(
     *,
     doc_label: str,
     status: DocStatus,
+    pdf_pages: list[int],
     page_text: str,
     erp_text: str,
     erp_refs: list[str],
@@ -151,10 +154,14 @@ def _explain_missing_or_duplicate(
     pdf_po_or_ref: str | None,
 ) -> tuple[str, str]:
     if status == DocStatus.DUPLICATE_IN_ERP:
+        pdf_clause = (
+            f"appears once in {page_text} ({_format_idr(pdf_total_signed)})"
+            if pdf_pages
+            else "is absent from the supplier PDF batch"
+        )
         return (
-            f"{doc_label} appears once in {page_text} ({_format_idr(pdf_total_signed)}) but is booked "
-            f"{len(erp_refs)} times in ERP ({erp_text}), totaling {_format_idr(erp_total_signed)} and "
-            f"overstating AP by {_format_idr(abs(difference_signed))}.",
+            f"{doc_label} {pdf_clause} but is booked {len(erp_refs)} times in ERP ({erp_text}), "
+            f"totaling {_format_idr(erp_total_signed)} and overstating AP by {_format_idr(abs(difference_signed))}.",
             f"Hold payment immediately and reverse the duplicate ERP entry to prevent a {_format_idr(abs(difference_signed))} overpayment.",
         )
     if status == DocStatus.DUPLICATE_IN_PDF:
@@ -226,6 +233,7 @@ def build_explanation_and_action(
         return _explain_missing_or_duplicate(
             doc_label=doc_label,
             status=status,
+            pdf_pages=pdf_pages,
             page_text=page_text,
             erp_text=erp_text,
             erp_refs=erp_refs,

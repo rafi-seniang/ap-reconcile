@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.engine.explanations import build_explanation_and_action
 from app.engine.line_matcher import match_document_lines
+from app.engine.math_rules import compute_dpp_nilai_lain, compute_ppn
 from app.schemas.erp import ErpDocument, ErpWorkbook
 from app.schemas.invoice import ExtractionUsage, ParsedDocument
 from app.schemas.reconciliation import (
@@ -164,6 +165,7 @@ def _collect_pair_review_reasons(
     pdf_doc: ParsedDocument,
     erp_doc: ErpDocument,
     *,
+    tolerance: Decimal,
     tax_base_error_as_needs_review: bool,
     reason_codes: list[str],
 ) -> tuple[list[str], bool]:
@@ -192,6 +194,12 @@ def _collect_pair_review_reasons(
         )
         dpp_code = "TAX_BASE_WRONG_DPP_NOT_11_12" if is_full_base else "PDF_DPP_RULE_ERROR"
         (needs_review_reasons if tax_base_error_as_needs_review else reason_codes).append(dpp_code)
+    elif pdf_doc.subtotal is not None and pdf_doc.ppn is not None:
+        expected_r4_ppn = compute_ppn(compute_dpp_nilai_lain(pdf_doc.subtotal))
+        if abs(abs(pdf_doc.ppn) - expected_r4_ppn) > tolerance:
+            (needs_review_reasons if tax_base_error_as_needs_review else reason_codes).append(
+                "PDF_PPN_RULE_ERROR"
+            )
 
     if pdf_doc.currency != erp_doc.currency:
         needs_review_reasons.append("CURRENCY_MISMATCH")
@@ -236,6 +244,7 @@ def _classify_matched_pair(
     needs_review_reasons, has_wrong_dpp_base = _collect_pair_review_reasons(
         pdf_doc,
         erp_doc,
+        tolerance=tolerance,
         tax_base_error_as_needs_review=tax_base_error_as_needs_review,
         reason_codes=reason_codes,
     )

@@ -10,7 +10,7 @@ Ground truth is stored in [`eval/ground_truth_sep2026.json`](../eval/ground_trut
 
 ### Model Comparison
 
-| Metric | `gemini-3.5-flash-lite` (Native PDF) | `deepseek-flash` (200 DPI PNG) |
+| Metric | `gemini-3.5-flash-lite` (1-Page PDF Benchmark) | `deepseek-flash` (200 DPI PNG, Unified LiteLLM) |
 | --- | --- | --- |
 | Document Status Accuracy (R8) | **16 / 16 (100%)** | **16 / 16 (100%)** |
 | Exact PDF & ERP Total Match | **16 / 16 (100%)** | **16 / 16 (100%)** |
@@ -64,7 +64,7 @@ Generated programmatically by [`eval/adversarial_eval.py`](../eval/adversarial_e
 7. **Unbooked valid invoice**: routed to `MISSING_IN_ERP`.
 
 - **Result**: **7 / 7 cases passed (100%)**, **Unexplained Variance = Rp 0**, **8 primary + 2 retry calls** (only illegible Page 2 and supplier-error Page 7), **9.3 s** (list eq. USD 0.010).
-- **Refactored layered engine replay (LiteLLM)**: Verified live end-to-end on September 2026 via the unified `LiteLLMPageExtractor` (`openai/deepseek-flash`, single API key, 16+1 calls, **30.7 s**): **16 / 16** statuses, **16 / 16** totals, **16 / 16** line discrepancies, **Unexplained Variance = Rp 0**, alongside **76 / 76** passing unit and API tests (including rate-limit and upload-size guard tests).
+- **Refactored layered engine replay (LiteLLM 200 DPI PNG)**: The final runtime (`app/llm/client.py`) standardizes on 200 DPI PNG across all providers via `LiteLLMPageExtractor` for zero-branch instant failover. Verified live end-to-end on September 2026 (`deepseek/deepseek-flash`, single API key, 16+1 calls, **30.7 s**): **16 / 16** statuses, **16 / 16** totals, **16 / 16** line discrepancies, **Unexplained Variance = Rp 0**, alongside passing unit and API tests.
 
 ## 4. Observed Failure Cases and Guardrails Tested
 
