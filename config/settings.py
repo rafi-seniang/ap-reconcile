@@ -53,8 +53,8 @@ class Settings(BaseSettings):
         description="Primary LiteLLM vision model for page extraction",
     )
     llm_retry_model: str | None = Field(
-        default="gemini/gemini-3.5-flash-lite",
-        description="Optional LiteLLM model for 1x targeted retry when a document fails math checks",
+        default=None,
+        description="Optional override model for 1x math-gate retry (defaults to llm_model when blank)",
     )
     llm_fallback_model: str | None = Field(
         default=None,
