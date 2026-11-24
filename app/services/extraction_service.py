@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.engine.math_rules import failed_core_arithmetic_checks, verify_pdf_document_math
 from app.llm.assembler import assemble_documents
-from app.llm.client import PageExtractor, TokenCount, estimate_extraction_cost_usd
+from app.llm.client import PageExtractor, TokenCount, UpstreamUnavailable, estimate_extraction_cost_usd
 from app.llm.parser import parse_assembled_document
 from app.llm.pdf_splitter import PdfPagePayload, load_pdf_pages
 from app.schemas.invoice import ExtractedPage, ExtractionUsage, ParsedDocument
@@ -128,19 +128,35 @@ class ExtractionService:
                 )
                 return ExtractedPage(page_number=page_number, printed=printed_page), tokens
 
-        retried_results = await asyncio.gather(*(retry_single_page(page_num) for page_num in document.pages))
+        try:
+            retried_results = await asyncio.gather(*(retry_single_page(page_num) for page_num in document.pages))
+        except UpstreamUnavailable as exc:
+            logger.warning(
+                "Math-gate retry failed for %s (pages %s), keeping primary extraction: %s",
+                document.doc_number_raw or f"pages {document.pages}",
+                document.pages,
+                exc,
+            )
+            return document, 0, 0, 0, 0, 0
+
         retried_pages, retry_calls, retry_fallbacks, retry_cached, retry_in, retry_out = (
             _tally_page_extraction_tokens(list(retried_results))
         )
         candidates = _assemble_parse_and_verify_pages(retried_pages)
         if len(candidates) == 1:
             candidate = candidates[0]
+            preserves_extracted_structure = (not document.lines or bool(candidate.lines)) and (
+                not document.doc_number_norm or bool(candidate.doc_number_norm)
+            )
             old_failure_count = len(failed_core_arithmetic_checks(document))
             new_failure_count = len(failed_core_arithmetic_checks(candidate))
-            if new_failure_count < old_failure_count or (
-                new_failure_count == old_failure_count
-                and document.has_parse_errors
-                and not candidate.has_parse_errors
+            if preserves_extracted_structure and (
+                new_failure_count < old_failure_count
+                or (
+                    new_failure_count == old_failure_count
+                    and document.has_parse_errors
+                    and not candidate.has_parse_errors
+                )
             ):
                 logger.info(
                     "Math-gate retry improved %s (pages %s): %s -> %s core check failures",

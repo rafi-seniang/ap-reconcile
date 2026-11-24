@@ -11,6 +11,7 @@ import uvicorn
 from app.kernel import build_reconciliation_service, create_web_application
 from app.llm.client import UpstreamUnavailable
 from app.schemas.erp import ErpValidationError
+from app.services.reconciliation_service import ReconciliationService
 from config.settings import Settings
 
 
@@ -20,18 +21,23 @@ def _configure_logging(verbose: bool) -> None:
 
 
 async def _run_reconcile_command(pdf_path: Path, erp_path: Path, output_dir: Path) -> int:
-    settings = Settings()
-    service = build_reconciliation_service(settings)
+    service: ReconciliationService | None = None
     try:
+        settings = Settings()
+        service = build_reconciliation_service(settings)
         result = await service.reconcile(pdf_path, erp_path, output_dir=output_dir)
     except ErpValidationError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except (FileNotFoundError, ValueError, PermissionError) as exc:
+        print(f"Input or output error: {exc}", file=sys.stderr)
         return 2
     except UpstreamUnavailable as exc:
         print(f"Upstream LLM error: {exc}", file=sys.stderr)
         return 3
     finally:
-        await service.close()
+        if service is not None:
+            await service.close()
 
     totals = result.report.control_totals
     print(f"Reconciled {totals.pdf_document_count} PDF docs vs {totals.erp_entry_count} ERP entries")
@@ -51,9 +57,14 @@ async def _run_reconcile_command(pdf_path: Path, erp_path: Path, output_dir: Pat
         total_in = usage.input_tokens + usage.retry_input_tokens
         total_out = usage.output_tokens + usage.retry_output_tokens
         cost_label = f"${usage.estimated_cost_usd:.5f}" if usage.estimated_cost_usd is not None else "n/a"
+        fallback_note = (
+            f" fallback={usage.fallback_calls}x ({usage.fallback_model}) |"
+            if usage.fallback_calls > 0 and usage.fallback_model
+            else ""
+        )
         print(
             f"Extraction: {usage.provider}/{usage.model} (retry={usage.retry_model}) | "
-            f"calls={usage.primary_calls}+{usage.retry_calls} cached={usage.cached_pages} | "
+            f"calls={usage.primary_calls}+{usage.retry_calls} cached={usage.cached_pages} |{fallback_note} "
             f"tokens={total_in:,} in / {total_out:,} out | cost={cost_label} | {usage.latency_ms / 1000:.2f}s"
         )
     print(f"Reports written to: {output_dir.resolve()}")

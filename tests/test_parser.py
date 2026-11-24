@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from app.llm.parser import (
     normalize_currency,
@@ -13,7 +14,7 @@ from app.llm.parser import (
     parse_decimal_amount,
     parse_discount_pct,
 )
-from app.schemas.invoice import AssembledDocument, AssembledLine, PrintedLine
+from app.schemas.invoice import AssembledDocument, AssembledLine, PrintedLine, PrintedPage
 
 
 def test_normalize_key_unifies_slashes_hyphens_and_case() -> None:
@@ -40,6 +41,14 @@ def test_normalize_key_unifies_slashes_hyphens_and_case() -> None:
         ("Rp. 972.360 ,-", Decimal("972360")),
         ("USD 1,250.00", Decimal("1250.00")),
         ("$972,360", Decimal("972360")),
+        ("Rp -972.360", Decimal("-972360")),
+        ("IDR -972.360", Decimal("-972360")),
+        ("Rp (972.360)", Decimal("-972360")),
+        ("\u2212972.360", Decimal("-972360")),
+        ("0.125", Decimal("0.125")),
+        ("0,500", Decimal("0.500")),
+        ("1.234,567", Decimal("1234.567")),
+        ("01.000", None),
         ("0", Decimal("0")),
         ("(1000", None),
         ("ABC", None),
@@ -49,6 +58,12 @@ def test_normalize_key_unifies_slashes_hyphens_and_case() -> None:
 )
 def test_parse_decimal_amount(raw: str, expected: Decimal | None) -> None:
     assert parse_decimal_amount(raw) == expected
+
+
+def test_parse_decimal_amount_rejects_non_finite_floats() -> None:
+    assert parse_decimal_amount(float("nan")) is None
+    assert parse_decimal_amount(float("inf")) is None
+    assert parse_decimal_amount(Decimal("NaN")) is None
 
 
 @pytest.mark.parametrize(
@@ -78,6 +93,10 @@ def test_parse_discount_pct(raw: str | None, expected: Decimal | None) -> None:
         ("23-09-2026", False, date(2026, 9, 23)),
         ("14 September 2026", False, date(2026, 9, 14)),
         ("02 Okt 2026", False, date(2026, 10, 2)),
+        ("15-Sep-2026", False, date(2026, 9, 15)),
+        ("15-Okt-2026", False, date(2026, 10, 15)),
+        ("01 Sept 2026", False, date(2026, 9, 1)),
+        ("2026-10-05 00:00:00", False, date(2026, 10, 5)),
         ("November 4, 2026", False, date(2026, 11, 4)),
         ("Sep 14, 2026", False, date(2026, 9, 14)),
         ("2026-02-30", False, None),
@@ -96,6 +115,7 @@ def test_parse_date_flexible(raw: str, prefer_month_first: bool, expected: date 
         ("Rp", "IDR"),
         ("Rp.", "IDR"),
         ("idr", "IDR"),
+        ("Rupiah", "IDR"),
         ("usd", "USD"),
     ],
 )
@@ -138,3 +158,44 @@ def test_parse_assembled_document_records_explicit_parse_errors() -> None:
     assert parsed.has_parse_errors is True
     failed_names = {c.name for c in parsed.checks if not c.passed}
     assert {"parse_doc_date", "parse_ppn", "parse_line_1_qty", "parse_line_1_discount"}.issubset(failed_names)
+
+
+def test_payment_term_due_date_does_not_trigger_parse_error_and_schema_guards_keys() -> None:
+    assembled = AssembledDocument(
+        pages=[1],
+        document_type="invoice",
+        supplier_name="PT Prima Kertas",
+        doc_number_raw="PKI/INV/2026/10/0201",
+        doc_date_raw="15-Okt-2026",
+        due_date_raw="Net 30 Hari",
+        po_number_raw="PO-1",
+        reference_doc_raw=None,
+        currency="Rupiah",
+        subtotal_raw="100.000",
+        dpp_raw="91.667",
+        ppn_raw="11.000",
+        grand_total_raw="111.000",
+        lines=[
+            AssembledLine(
+                source_page=1,
+                printed=PrintedLine.model_validate(
+                    {
+                        "line_number_raw": 1,
+                        "item_code": "SKU-1",
+                        "description": "Paper",
+                        "quantity_raw": 10,
+                        "unit_price_raw": "10.000",
+                        "line_amount_raw": "100.000",
+                    }
+                ),
+            )
+        ],
+    )
+    parsed = parse_assembled_document(assembled)
+    assert parsed.has_parse_errors is False
+    assert parsed.doc_date == date(2026, 10, 15)
+    assert parsed.due_date is None
+    assert parsed.currency == "IDR"
+
+    with pytest.raises(ValidationError):
+        PrintedPage.model_validate_json('{"invoice_number": "INV-999"}')

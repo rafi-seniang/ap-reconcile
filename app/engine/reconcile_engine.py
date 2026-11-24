@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from app.engine.explanations import build_explanation_and_action
 from app.engine.line_matcher import match_document_lines
-from app.engine.math_rules import compute_dpp_nilai_lain, compute_ppn
+from app.engine.math_rules import compute_dpp_nilai_lain, compute_line_amount, compute_ppn
 from app.schemas.erp import ErpDocument, ErpWorkbook
 from app.schemas.invoice import ExtractionUsage, ParsedDocument
 from app.schemas.reconciliation import (
@@ -25,14 +25,18 @@ def _apply_document_sign(amount: Decimal | None, sign: Decimal) -> Decimal:
     return abs(amount) * sign if amount is not None else Decimal("0")
 
 
+def _format_pdf_page_location(pages: list[int]) -> str:
+    if len(pages) == 1:
+        return f"PDF Page {pages[0]}"
+    if pages == list(range(pages[0], pages[-1] + 1)):
+        return f"PDF Pages {pages[0]}-{pages[-1]}"
+    return f"PDF Pages {', '.join(str(page) for page in pages)}"
+
+
 def _append_pdf_audit_refs(document: ParsedDocument, document_key: str, audit_trail: list[AuditRef]) -> None:
     sign = _get_pdf_document_sign(document)
     raw_doc_number = document.doc_number_raw or document_key
-    page_location = (
-        f"PDF Page {document.pages[0]}"
-        if len(document.pages) == 1
-        else f"PDF Pages {document.pages[0]}-{document.pages[-1]}"
-    )
+    page_location = _format_pdf_page_location(document.pages)
     for field_name, amount in (
         ("Subtotal", document.subtotal),
         ("DPP", document.dpp),
@@ -161,6 +165,29 @@ def _index_batch_documents(
     return ordered_keys, pdf_by_key, erp_by_key, audit_trail
 
 
+def _has_erp_internal_math_error(erp_doc: ErpDocument, tolerance: Decimal) -> bool:
+    """Verify ERP internal arithmetic under R1-R5 so corrupt ERP postings are flagged per R7."""
+    subtotal_abs = abs(erp_doc.subtotal_signed)
+    dpp_abs = abs(erp_doc.dpp_signed)
+    ppn_abs = abs(erp_doc.ppn_signed)
+    total_abs = abs(erp_doc.grand_total_signed)
+
+    if erp_doc.lines and sum((line.line_amount_abs for line in erp_doc.lines), Decimal("0")) != subtotal_abs:
+        return True
+    if subtotal_abs + ppn_abs != total_abs:
+        return True
+    if any(
+        abs(line.line_amount_abs - compute_line_amount(line.quantity_abs, line.unit_price, line.discount_pct))
+        > Decimal("1")
+        for line in erp_doc.lines
+    ):
+        return True
+
+    expected_dpp = compute_dpp_nilai_lain(subtotal_abs)
+    expected_ppn = compute_ppn(expected_dpp)
+    return abs(dpp_abs - expected_dpp) > tolerance or abs(ppn_abs - expected_ppn) > tolerance
+
+
 def _collect_pair_review_reasons(
     pdf_doc: ParsedDocument,
     erp_doc: ErpDocument,
@@ -182,6 +209,14 @@ def _collect_pair_review_reasons(
         needs_review_reasons.append("PDF_INTERNAL_SUBTOTAL_ERROR")
     if "total_adds_up" in check_by_name and not check_by_name["total_adds_up"].passed:
         needs_review_reasons.append("PDF_INTERNAL_TOTAL_ERROR")
+    if _has_erp_internal_math_error(erp_doc, tolerance):
+        needs_review_reasons.append("ERP_INTERNAL_MATH_ERROR")
+
+    lowered_erp_status = erp_doc.doc_status.strip().lower()
+    if lowered_erp_status in ("cancelled", "canceled", "void", "reversed"):
+        needs_review_reasons.append("ERP_STATUS_CANCELLED")
+    elif lowered_erp_status == "parked":
+        reason_codes.append("ERP_STATUS_PARKED")
 
     dpp_check = check_by_name.get("dpp_matches_r3_11_12")
     has_wrong_dpp_base = False
@@ -251,7 +286,7 @@ def _classify_matched_pair(
     if needs_review_reasons:
         reason_codes.extend(needs_review_reasons)
         return DocStatus.NEEDS_REVIEW, line_discrepancies
-    if difference_signed == Decimal("0") and not line_discrepancies:
+    if difference_signed == Decimal("0") and not line_discrepancies and not has_wrong_dpp_base:
         return DocStatus.MATCHED, line_discrepancies
     if abs(difference_signed) <= tolerance and not line_discrepancies and not has_wrong_dpp_base:
         reason_codes.append(
@@ -273,6 +308,15 @@ def _classify_matched_pair(
         and "TAX_BASE_WRONG_DPP_NOT_11_12" not in seen_reasons
     ):
         reason_codes.append("TAX_AMOUNT_MISMATCH")
+        seen_reasons.add("TAX_AMOUNT_MISMATCH")
+
+    non_format_reasons = seen_reasons - {
+        "DOC_NO_FORMAT_NORMALISED",
+        "CREDIT_NOTE_SIGN_NORMALISED",
+        "ERP_STATUS_PARKED",
+    }
+    if not non_format_reasons:
+        reason_codes.append("HEADER_TOTAL_MISMATCH")
     return DocStatus.AMOUNT_MISMATCH, line_discrepancies
 
 

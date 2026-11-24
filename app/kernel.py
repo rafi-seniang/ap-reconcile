@@ -61,7 +61,12 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
             ),
             settings.extraction_cache_dir,
         )
-        if not has_active_fallback or fallback_model is None or fallback_key is None:
+        if (
+            not has_active_fallback
+            or fallback_model is None
+            or fallback_key is None
+            or fallback_model == model_name
+        ):
             return primary_leaf
 
         fallback_leaf = _wrap_disk_cache(
@@ -84,13 +89,18 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
     if not retry_model or retry_model == settings.llm_model:
         retry: PageExtractor | None = primary
     else:
-        retry_key = settings.resolve_api_key_for_model(retry_model) or primary_key
-        retry_base = (
-            settings.llm_base_url
-            if infer_provider_name(retry_model) == infer_provider_name(settings.llm_model, settings.llm_base_url)
-            else None
+        same_retry_provider = infer_provider_name(retry_model) == infer_provider_name(
+            settings.llm_model, settings.llm_base_url
         )
-        retry = build_model_extractor(retry_model, retry_key, retry_base)
+        retry_key = settings.resolve_api_key_for_model(retry_model) or (
+            primary_key if same_retry_provider else None
+        )
+        if retry_key is None:
+            logger.info("Retry model '%s' configured without an API key; reusing primary extractor.", retry_model)
+            retry = primary
+        else:
+            retry_base = settings.llm_base_url if same_retry_provider else None
+            retry = build_model_extractor(retry_model, retry_key, retry_base)
     active_fallback_name = fallback_model if has_active_fallback else None
     return primary, retry, active_fallback_name
 
