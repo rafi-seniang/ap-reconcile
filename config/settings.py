@@ -1,9 +1,12 @@
 """Application settings loaded from environment variables and .env."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
 
 
 def read_local_secrets_file(secrets_path: Path) -> dict[str, str]:
@@ -80,7 +83,17 @@ class Settings(BaseSettings):
         description="Optional path to a local secrets file checked when env keys are unset",
     )
 
-    # Concurrency, timeouts, and image rendering
+    # Concurrency, sampling, retries, timeouts, and image rendering
+    llm_temperature: float = Field(
+        default=0.0, ge=0.0, le=2.0, description="Sampling temperature (auto-dropped on models that ignore it)"
+    )
+    llm_reasoning_effort: ReasoningEffort = Field(
+        default="none",
+        description="LiteLLM reasoning_effort ('none' disables CoT on DeepSeek and uses minimal/low on Gemini 3)",
+    )
+    llm_max_retries: int = Field(
+        default=3, ge=0, le=10, description="Max backoff retries on primary model when no fallback is active"
+    )
     llm_concurrency: int = Field(default=3, ge=1, le=20, description="Max concurrent page extraction calls")
     llm_timeout_seconds: float = Field(default=90.0, gt=0, description="Per-request timeout in seconds")
     llm_max_output_tokens: int = Field(default=4096, ge=512, description="Max output tokens per page call")
@@ -115,6 +128,9 @@ class Settings(BaseSettings):
     )
     max_pdf_upload_mb: int = Field(default=25, ge=1, description="Maximum allowed PDF upload size in MB")
     max_erp_upload_mb: int = Field(default=10, ge=1, description="Maximum allowed ERP workbook size in MB")
+    max_stored_runs: int = Field(
+        default=10, ge=1, le=100, description="Maximum recent reconciliation runs kept in web UI memory"
+    )
 
     def _lookup_provider_key(self, provider: str) -> str | None:
         direct_by_provider: dict[str, SecretStr | None] = {

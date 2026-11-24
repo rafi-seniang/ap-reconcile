@@ -26,7 +26,7 @@ from app.prompts.extraction_prompt import (
     build_page_extraction_user_prompt,
 )
 from app.schemas.invoice import PrintedPage
-from config.settings import Settings, infer_provider_name
+from config.settings import ReasoningEffort, Settings, infer_provider_name
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,8 @@ class LiteLLMPageExtractor:
         api_key: str,
         *,
         api_base: str | None = None,
+        temperature: float = 0.0,
+        reasoning_effort: ReasoningEffort = "none",
         timeout_seconds: float = 90.0,
         max_output_tokens: int = 4096,
         max_retries: int = 3,
@@ -113,20 +115,22 @@ class LiteLLMPageExtractor:
         self.provider_name = infer_provider_name(model_name, api_base)
         self._api_key = api_key
         self._api_base = api_base
+        self._temperature = temperature
+        self._reasoning_effort = reasoning_effort
         self._timeout_seconds = timeout_seconds
         self._max_output_tokens = max_output_tokens
         self._max_retries = max_retries
         self._schema_outline_json = json.dumps(build_schema_outline(PrintedPage), ensure_ascii=False)
 
     def _build_completion_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        # Uniform settings: reasoning_effort="none" disables CoT on DeepSeek/OpenAI and maps to minimal/low on Gemini 3.
+        # Uniform settings driven by Settings/.env; LiteLLM drops unsupported knobs per model capability matrix.
         request_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
             "api_key": self._api_key,
-            "temperature": 0.0,
+            "temperature": self._temperature,
             "seed": 0,
-            "reasoning_effort": "none",
+            "reasoning_effort": self._reasoning_effort,
             "max_tokens": self._max_output_tokens,
             "timeout": self._timeout_seconds,
             "num_retries": 0,

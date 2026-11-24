@@ -19,8 +19,6 @@ from app.schemas.erp import ErpValidationError
 from app.schemas.reconciliation import ReconciliationReport
 from app.services.reconciliation_service import ReconciliationService
 
-_MAX_STORED_RUNS = 10
-
 
 @dataclass
 class StoredReconciliationRun:
@@ -34,7 +32,7 @@ class StoredReconciliationRun:
 class InMemoryRunStore:
     """Bounded FIFO store keeping the most recent reconciliation runs in memory."""
 
-    def __init__(self, max_runs: int = _MAX_STORED_RUNS) -> None:
+    def __init__(self, max_runs: int = 10) -> None:
         self._max_runs = max_runs
         self._runs: OrderedDict[str, StoredReconciliationRun] = OrderedDict()
 
