@@ -92,7 +92,7 @@ class ExtractionService:
     async def close(self) -> None:
         """Close underlying extractor clients."""
         await self._primary_extractor.close()
-        if self._retry_extractor is not None:
+        if self._retry_extractor is not None and self._retry_extractor is not self._primary_extractor:
             await self._retry_extractor.close()
 
     async def _extract_primary_pages(

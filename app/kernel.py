@@ -20,7 +20,7 @@ from app.services.erp_service import ErpService
 from app.services.extraction_service import ExtractionService
 from app.services.reconciliation_service import ReconciliationService
 from app.services.report_service import ReportService
-from config.settings import Settings
+from config.settings import Settings, infer_provider_name
 
 logger = logging.getLogger(__name__)
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
@@ -45,12 +45,14 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
     has_active_fallback = bool(fallback_model and fallback_key and fallback_model != settings.llm_model)
     primary_max_retries = 0 if has_active_fallback else settings.llm_max_retries
 
-    def build_model_extractor(model_name: str) -> PageExtractor:
+    def build_model_extractor(
+        model_name: str, model_api_key: str, model_api_base: str | None
+    ) -> PageExtractor:
         primary_leaf = _wrap_disk_cache(
             LiteLLMPageExtractor(
                 model_name=model_name,
-                api_key=primary_key,
-                api_base=settings.llm_base_url,
+                api_key=model_api_key,
+                api_base=model_api_base,
                 temperature=settings.llm_temperature,
                 reasoning_effort=settings.llm_reasoning_effort,
                 timeout_seconds=settings.llm_timeout_seconds,
@@ -77,8 +79,18 @@ def build_page_extractors(settings: Settings) -> tuple[PageExtractor, PageExtrac
         )
         return FallbackPageExtractor(primary_leaf, fallback_leaf)
 
-    primary = build_model_extractor(settings.llm_model)
-    retry = build_model_extractor(settings.llm_retry_model) if settings.llm_retry_model else None
+    primary = build_model_extractor(settings.llm_model, primary_key, settings.llm_base_url)
+    retry_model = settings.llm_retry_model.strip() if settings.llm_retry_model else None
+    if not retry_model or retry_model == settings.llm_model:
+        retry: PageExtractor | None = primary
+    else:
+        retry_key = settings.resolve_api_key_for_model(retry_model) or primary_key
+        retry_base = (
+            settings.llm_base_url
+            if infer_provider_name(retry_model) == infer_provider_name(settings.llm_model, settings.llm_base_url)
+            else None
+        )
+        retry = build_model_extractor(retry_model, retry_key, retry_base)
     active_fallback_name = fallback_model if has_active_fallback else None
     return primary, retry, active_fallback_name
 

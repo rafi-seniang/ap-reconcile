@@ -470,9 +470,23 @@ def test_settings_infers_provider_names_and_resolves_fallback_gracefully() -> No
         secrets_env_path=None,
         extraction_cache_dir=None,
     )
-    primary, _, active_fallback = build_page_extractors(settings_single_key)
+    primary, retry, active_fallback = build_page_extractors(settings_single_key)
     assert active_fallback is None
     assert not isinstance(primary, FallbackPageExtractor)
+    assert retry is primary
+
+    # Switching LLM_MODEL without setting LLM_RETRY_MODEL reuses the switched model for retry.
+    settings_switched = Settings(
+        llm_model="deepseek/deepseek-flash",
+        llm_retry_model=None,
+        llm_fallback_model=None,
+        deepseek_api_key="test-deepseek-key",
+        secrets_env_path=None,
+        extraction_cache_dir=None,
+    )
+    ds_primary, ds_retry, _ = build_page_extractors(settings_switched)
+    assert ds_primary.model_name == "deepseek/deepseek-flash"
+    assert ds_retry is ds_primary
 
 
 class _Always503Extractor:
